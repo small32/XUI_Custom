@@ -3,6 +3,8 @@ name: Release XUI_Custom
 on:
   push:
     tags: ['0.*']
+    branches: [main]
+    paths: [config/version]
   workflow_dispatch:
     inputs:
       version:
@@ -23,10 +25,12 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
+      - uses: actions/checkout@v4
       - id: version
         env:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
+          if [ "$VERSION" = main ]; then VERSION=$(tr -d '\r\n' < config/version); fi
           [[ "$VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a version such as 0.3.3'; exit 1; }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
