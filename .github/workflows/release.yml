@@ -1,147 +1,119 @@
-name: Release X-ui
+name: Release XUI_Custom
+
 on:
   push:
-    tags:
-      - 0.*
+    tags: ['0.*']
   workflow_dispatch:
+    inputs:
+      version:
+        description: 'New release version (for example 0.3.3)'
+        required: true
+        default: '0.3.3'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.version || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: ubuntu-latest
+  prepare:
+    runs-on: ubuntu-22.04
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+      - id: version
         env:
-          GITHUB_TOKEN: ${{ secrets.GAYHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: ${{ github.ref }}
-          draft: true
-          prerelease: true
-  linuxamd64build:
-    name: build x-ui amd64 version
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Set up Go
-        uses: actions/setup-go@v2
-        with:
-          go-version: 1.18
-      - name: build linux amd64 version
+          VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
-          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -o xui-release -v main.go
-          mkdir x-ui
-          cp xui-release x-ui/xui-release
-          cp x-ui.service x-ui/x-ui.service
-          cp x-ui.sh x-ui/x-ui.sh
-          cd x-ui
-          mv xui-release x-ui
-          mkdir bin
-          cd bin
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
-          unzip Xray-linux-64.zip
-          rm -f Xray-linux-64.zip geoip.dat geosite.dat
-          wget https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-          wget https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
-          mv xray xray-linux-amd64
-          cd ..
-          cd ..
-      - name: package
-        run: tar -zcvf x-ui-linux-amd64.tar.gz x-ui
-      - name: upload
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GAYHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: x-ui-linux-amd64.tar.gz
-          asset_name: x-ui-linux-amd64.tar.gz
-          asset_content_type: application/gzip
-  linuxarm64build:
-    name: build x-ui arm64 version
-    needs: release
-    runs-on: ubuntu-latest
+          [[ "$VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a version such as 0.3.3'; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            cc: gcc
+            package: gcc
+            xray: Xray-linux-64.zip
+          - arch: arm64
+            cc: aarch64-linux-gnu-gcc
+            package: gcc-aarch64-linux-gnu
+            xray: Xray-linux-arm64-v8a.zip
+          - arch: s390x
+            cc: s390x-linux-gnu-gcc
+            package: gcc-s390x-linux-gnu
+            xray: Xray-linux-s390x.zip
     steps:
-      - uses: actions/checkout@v2
-      - name: Set up Go
-        uses: actions/setup-go@v2
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v7
         with:
-          go-version: 1.18
-      - name: build linux arm64 version
-        run: |
-          sudo apt-get update
-          sudo apt install gcc-aarch64-linux-gnu
-          CGO_ENABLED=1 GOOS=linux GOARCH=arm64 CC=aarch64-linux-gnu-gcc go build -o xui-release -v main.go
-          mkdir x-ui
-          cp xui-release x-ui/xui-release
-          cp x-ui.service x-ui/x-ui.service
-          cp x-ui.sh x-ui/x-ui.sh
-          cd x-ui
-          mv xui-release x-ui
-          mkdir bin
-          cd bin
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-arm64-v8a.zip
-          unzip Xray-linux-arm64-v8a.zip
-          rm -f Xray-linux-arm64-v8a.zip geoip.dat geosite.dat
-          wget https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-          wget https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
-          mv xray xray-linux-arm64
-          cd ..
-          cd ..
-      - name: package
-        run: tar -zcvf x-ui-linux-arm64.tar.gz x-ui
-      - name: upload
-        uses: actions/upload-release-asset@v1
+          go-version: '1.25'
+      - name: Install compiler
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.package }}
+      - name: Build and package
         env:
-          GITHUB_TOKEN: ${{ secrets.GAYHUB_TOKEN }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '1'
+          CC: ${{ matrix.cc }}
+        run: |
+          set -euo pipefail
+          printf '%s\n' "$VERSION" > config/version
+          mkdir -p dist/x-ui/bin
+          go build -trimpath -o dist/x-ui/x-ui main.go
+          cp x-ui.service x-ui.sh LICENSE dist/x-ui/
+          curl -fL --retry 3 "https://github.com/XTLS/Xray-core/releases/download/v26.3.27/${{ matrix.xray }}" -o xray.zip
+          unzip -j xray.zip xray -d dist/x-ui/bin
+          mv dist/x-ui/bin/xray "dist/x-ui/bin/xray-linux-${GOARCH}"
+          for file in geoip.dat geosite.dat; do
+            curl -fL --retry 3 "https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/$file" -o "dist/x-ui/bin/$file"
+          done
+          chmod +x dist/x-ui/x-ui dist/x-ui/x-ui.sh "dist/x-ui/bin/xray-linux-${GOARCH}"
+          test -s dist/x-ui/bin/geoip.dat
+          test -s dist/x-ui/bin/geosite.dat
+          if [ "$GOARCH" = amd64 ]; then
+            dist/x-ui/x-ui -v
+            dist/x-ui/bin/xray-linux-amd64 version
+          fi
+          tar -C dist -czf "x-ui-linux-${GOARCH}.tar.gz" x-ui
+          tar -tzf "x-ui-linux-${GOARCH}.tar.gz"
+      - uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: x-ui-linux-arm64.tar.gz
-          asset_name: x-ui-linux-arm64.tar.gz
-          asset_content_type: application/gzip
-  linuxs390xbuild:
-    name: build x-ui s390x version
-    needs: release
-    runs-on: ubuntu-latest
+          name: x-ui-linux-${{ matrix.arch }}
+          path: x-ui-linux-${{ matrix.arch }}.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v2
-      - name: Set up Go
-        uses: actions/setup-go@v2
+      - uses: actions/download-artifact@v4
         with:
-          go-version: 1.18
-      - name: build linux s390x version
-        run: |
-          sudo apt-get update
-          sudo apt install gcc-s390x-linux-gnu -y
-          CGO_ENABLED=1 GOOS=linux GOARCH=s390x CC=s390x-linux-gnu-gcc go build -o xui-release -v main.go
-          mkdir x-ui
-          cp xui-release x-ui/xui-release
-          cp x-ui.service x-ui/x-ui.service
-          cp x-ui.sh x-ui/x-ui.sh
-          cd x-ui
-          mv xui-release x-ui
-          mkdir bin
-          cd bin
-          wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-s390x.zip
-          unzip Xray-linux-s390x.zip
-          rm -f Xray-linux-s390x.zip geoip.dat geosite.dat
-          wget https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geoip.dat
-          wget https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download/geosite.dat
-          mv xray xray-linux-s390x
-          cd ..
-          cd ..
-      - name: package
-        run: tar -zcvf x-ui-linux-s390x.tar.gz x-ui
-      - name: upload
-        uses: actions/upload-release-asset@v1
+          pattern: x-ui-linux-*
+          merge-multiple: true
+          path: release
+      - name: Publish complete release
+        working-directory: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GAYHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.release.outputs.upload_url }}
-          asset_path: x-ui-linux-s390x.tar.gz
-          asset_name: x-ui-linux-s390x.tar.gz
-          asset_content_type: application/gzip
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64 s390x; do
+            test -s "x-ui-linux-${arch}.tar.gz"
+          done
+          sha256sum x-ui-linux-*.tar.gz > SHA256SUMS
+          printf '%s\n' '新增入站“生成Clash订阅”：Clash、默认转换后端、ACL4SSR_Mini 本地精简版、定制订阅长链接。' '安装和升级均使用 small32/XUI_Custom。' '包含 Linux amd64、arm64、s390x 安装包及 SHA256SUMS。' '面板版本：'"$VERSION" '打包 Xray-core v26.3.27；amd64 已执行程序启动检查，其他架构已完成交叉编译。' > notes.md
+          gh release create "$VERSION" --target "$COMMIT" --title "XUI_Custom $VERSION" --notes-file notes.md --draft x-ui-linux-*.tar.gz SHA256SUMS
+          gh release edit "$VERSION" --draft=false --prerelease=false --latest
