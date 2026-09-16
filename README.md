@@ -37,7 +37,7 @@
 
 ## 构建定制版本
 
-此功能需要从本仓库源码构建。下面的上游安装脚本、上游发行包和第三方镜像不包含本仓库的定制修改。
+目前本仓库尚无公开发行包，请从本仓库源码构建。上游发行包和第三方镜像不包含本仓库的定制修改。
 
 ```sh
 git clone https://github.com/small32/XUI_Custom.git
@@ -49,13 +49,17 @@ go build -o x-ui main.go
 
 # 安装&升级
 
+安装和升级均使用本仓库。以下一键安装、管理菜单升级及手动发行包安装，需要先在 [本仓库 Releases](https://github.com/small32/XUI_Custom/releases) 发布包含对应架构 `x-ui-linux-*.tar.gz` 附件的正式版本；目前请使用上面的源码构建方式或下面的本地 Docker 构建方式。
+
+## 一键安装与升级（发布正式发行包后可用）
+
 ```
-bash <(curl -Ls https://raw.githubusercontent.com/vaxilu/x-ui/master/install.sh)
+bash <(curl -fLsS https://raw.githubusercontent.com/small32/XUI_Custom/main/install.sh)
 ```
 
 ## 手动安装&升级
 
-1. 首先从 https://github.com/vaxilu/x-ui/releases 下载最新的压缩包，一般选择 `amd64`架构
+1. 首先从 [XUI_Custom Releases](https://github.com/small32/XUI_Custom/releases) 下载本仓库发布的压缩包，一般选择 `amd64`架构；没有发行包时请从源码构建。
 2. 然后将这个压缩包上传到服务器的 `/root/`目录下，并使用 `root`用户登录服务器
 
 > 如果你的服务器 cpu 架构不是 `amd64`，自行将命令中的 `amd64`替换为其他架构
@@ -83,21 +87,24 @@ systemctl restart x-ui
 curl -fsSL https://get.docker.com | sh
 ```
 
-2. 安装x-ui
+2. 从本仓库构建并安装定制版
 
 ```shell
-mkdir x-ui && cd x-ui
+git clone https://github.com/small32/XUI_Custom.git
+cd XUI_Custom
+docker build -t x-ui-custom .
 docker run -itd --network=host \
     -v $PWD/db/:/etc/x-ui/ \
     -v $PWD/cert/:/root/cert/ \
     --name x-ui --restart=unless-stopped \
-    enwaiax/x-ui:latest
+    x-ui-custom
 ```
 
-> Build 自己的镜像
+更新定制镜像时，在仓库目录拉取最新代码并重新构建，再使用原有数据库和证书挂载配置重新创建容器：
 
 ```shell
-docker build -t x-ui .
+git pull --ff-only
+docker build -t x-ui-custom .
 ```
 
 ## SSL证书申请
