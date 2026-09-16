@@ -60,6 +60,9 @@
                                         <a-menu-item v-if="dbInbound.hasLink()" key="qrcode">
                                             <a-icon type="qrcode"></a-icon>二维码
                                         </a-menu-item>
+                                        <a-menu-item v-if="dbInbound.hasLink()" key="clashSubscription">
+                                            <a-icon type="link"></a-icon>生成Clash订阅
+                                        </a-menu-item>
                                         <a-menu-item key="edit">
                                             <a-icon type="edit"></a-icon>编辑
                                         </a-menu-item>
@@ -116,6 +119,15 @@
             </a-spin>
         </a-layout-content>
     </a-layout>
+    <a-modal v-model="clashSubscriptionVisible" title="Clash 定制订阅（长链接）"
+             :footer="null">
+        <p>ACL4SSR_Mini 本地 精简版 · 默认后端 api.wcc.best</p>
+        <a-input type="textarea" :value="clashSubscriptionUrl" readonly
+                 :autosize="{ minRows: 4, maxRows: 10 }"></a-input>
+        <p style="margin-top: 12px">导入或更新订阅时，节点信息将发送到上述转换后端。</p>
+        <a-button id="clash-subscription-copy" type="primary"
+                  :data-clipboard-text="clashSubscriptionUrl">复制订阅链接</a-button>
+    </a-modal>
 </a-layout>
 {{template "js" .}}
 <script>
@@ -181,6 +193,8 @@
             inbounds: [],
             dbInbounds: [],
             searchKey: '',
+            clashSubscriptionVisible: false,
+            clashSubscriptionUrl: '',
         },
         methods: {
             loading(spinning=true) {
@@ -220,6 +234,9 @@
                 switch (action.key) {
                     case "qrcode":
                         this.showQrcode(dbInbound);
+                        break;
+                    case "clashSubscription":
+                        this.showClashSubscription(dbInbound);
                         break;
                     case "edit":
                         this.openEditInbound(dbInbound);
@@ -320,6 +337,28 @@
                 const link = dbInbound.genLink();
                 qrModal.show('二维码', link);
             },
+            showClashSubscription(dbInbound) {
+                if (!dbInbound.hasLink()) return;
+                const link = dbInbound.genLink();
+                if (!link) {
+                    this.$message.error('无法生成当前入站的节点链接');
+                    return;
+                }
+                // Match acl4ssr-sub.github.io advanced-mode defaults (2026-09-16).
+                this.clashSubscriptionUrl = 'https://api.wcc.best/sub?target=clash&url='
+                    + encodeURIComponent(link)
+                    + '&insert=false&config=' + encodeURIComponent('config/ACL4SSR_Mini.ini')
+                    + '&emoji=true&list=false&tfo=false&scv=true&fdn=false'
+                    + '&expand=true&sort=false&new_name=true';
+                this.clashSubscriptionVisible = true;
+                this.$nextTick(() => {
+                    if (!this.clashSubscriptionClipboard) {
+                        this.clashSubscriptionClipboard = new ClipboardJS('#clash-subscription-copy');
+                        this.clashSubscriptionClipboard.on('success', () => this.$message.success('复制成功'));
+                        this.clashSubscriptionClipboard.on('error', () => this.$message.error('复制失败，请手动选择并复制上方链接'));
+                    }
+                });
+            },
             showInfo(dbInbound) {
                 infoModal.show(dbInbound);
             },
@@ -340,6 +379,9 @@
         },
         mounted() {
             this.getDBInbounds();
+        },
+        beforeDestroy() {
+            if (this.clashSubscriptionClipboard) this.clashSubscriptionClipboard.destroy();
         },
         computed: {
             total() {
