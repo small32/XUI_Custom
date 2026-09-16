@@ -37,7 +37,7 @@
 
 ## 构建定制版本
 
-目前本仓库尚无公开发行包，请从本仓库源码构建。上游发行包和第三方镜像不包含本仓库的定制修改。
+本仓库已发布正式安装包，可按下面的安装与升级说明使用。需要自行编译时，可从本仓库源码构建。上游发行包和第三方镜像不包含本仓库的定制修改。
 
 ```sh
 git clone https://github.com/small32/XUI_Custom.git
@@ -49,9 +49,9 @@ go build -o x-ui main.go
 
 # 安装&升级
 
-安装和升级均使用本仓库。以下一键安装、管理菜单升级及手动发行包安装，需要先在 [本仓库 Releases](https://github.com/small32/XUI_Custom/releases) 发布包含对应架构 `x-ui-linux-*.tar.gz` 附件的正式版本；目前请使用上面的源码构建方式或下面的本地 Docker 构建方式。
+安装和升级均使用 [本仓库最新正式发行包](https://github.com/small32/XUI_Custom/releases/latest)，提供 Linux amd64、arm64、s390x 安装包和 SHA256SUMS 校验文件。首个定制正式版本为 0.3.3。
 
-## 一键安装与升级（发布正式发行包后可用）
+## 一键安装与升级
 
 ```
 bash <(curl -fLsS https://raw.githubusercontent.com/small32/XUI_Custom/main/install.sh)
