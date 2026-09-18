@@ -362,7 +362,7 @@
                     const remoteLink = remoteInbound.genLink(remoteAddress, remoteName);
                     if (remoteLink) links.push(remoteLink);
                 }
-                const link = links.join('\n');
+                const link = links.join('|');
                 if (!link) {
                     this.$message.error('无法生成当前入站的节点链接');
                     return;
