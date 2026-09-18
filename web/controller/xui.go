@@ -27,6 +27,7 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 
 	a.inboundController = NewInboundController(g)
 	a.settingController = NewSettingController(g)
+	NewServerManagementController(g)
 }
 
 func (a *XUIController) index(c *gin.Context) {
