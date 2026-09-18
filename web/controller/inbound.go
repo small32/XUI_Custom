@@ -67,6 +67,10 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	inbound.UserId = user.Id
 	inbound.Enable = true
 	inbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
+	if err = a.inboundService.ApplyPanelCertificates(inbound); err != nil {
+		jsonMsg(c, "添加", err)
+		return
+	}
 	err = a.inboundService.AddInbound(inbound)
 	if err == nil {
 		if syncErr := a.serverService.SyncInbound(inbound, true); syncErr != nil {
@@ -110,6 +114,10 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 	}
 	err = c.ShouldBind(inbound)
 	if err != nil {
+		jsonMsg(c, "修改", err)
+		return
+	}
+	if err = a.inboundService.ApplyPanelCertificates(inbound); err != nil {
 		jsonMsg(c, "修改", err)
 		return
 	}

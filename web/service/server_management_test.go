@@ -87,4 +87,27 @@ func TestSyncInboundVisibility(t *testing.T) {
 		t.Fatal("deleted unrelated port", out, err)
 	}
 
+	if out, err := run("CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES ('webCertFile','/remote/cert.pem'),('webKeyFile','/remote/key.pem');"); err != nil {
+		t.Fatal(out, err)
+	}
+	in.Port = 12345
+	in.StreamSettings = `{"security":"tls","tlsSettings":{"certificates":[{"certificateFile":"/local/cert.pem","keyFile":"/local/key.pem"}]}}`
+	if out, err := run(syncInboundSQL(in, false)); err != nil {
+		t.Fatal(out, err)
+	}
+	out, err = run("SELECT json_extract(stream_settings,'$.tlsSettings.certificates[0].certificateFile'),json_extract(stream_settings,'$.tlsSettings.certificates[0].keyFile') FROM inbounds WHERE port=12345;")
+	if err != nil || out != "/remote/cert.pem|/remote/key.pem" {
+		t.Fatalf("remote certificates: %q %v", out, err)
+	}
+	if _, err := run("DELETE FROM settings;"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := run(syncInboundSQL(in, false)); err == nil {
+		t.Fatal("missing remote certificate should fail")
+	}
+	in.Port = 55555
+	if out, err := run(syncInboundSQL(in, false)); err != nil || out != "0" {
+		t.Fatalf("missing port must skip: %q %v", out, err)
+	}
+
 }

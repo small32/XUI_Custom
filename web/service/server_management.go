@@ -76,27 +76,37 @@ func syncInboundSQL(inbound *model.Inbound, create bool, full ...bool) string {
 		enable = 1
 	}
 	owner := fmt.Sprintf("COALESCE((SELECT user_id FROM inbounds WHERE port=%d AND user_id IN (SELECT id FROM users)), (SELECT min(id) FROM users HAVING count(*)=1))", inbound.Port)
+	stream := quote(inbound.StreamSettings)
+	paths, _ := certificatePaths(inbound.StreamSettings)
+	for _, path := range paths {
+		stream = fmt.Sprintf("json_set(%s, '%s.certificateFile', (SELECT value FROM settings WHERE key='webCertFile'), '%s.keyFile', (SELECT value FROM settings WHERE key='webKeyFile'))", stream, path, path)
+	}
 	upsert := !create && len(full) > 0 && full[0]
 	guard := fmt.Sprintf(" WHERE EXISTS (SELECT 1 FROM inbounds WHERE port=%d)", inbound.Port)
 	var statement string
 	if create || upsert {
 		guard = ""
-		statement = fmt.Sprintf("INSERT INTO inbounds (user_id,port,protocol,settings,stream_settings,tag,sniffing,remark,listen,enable,expiry_time,total,up,down) VALUES ((SELECT id FROM sync_owner),%d,%s,%s,%s,%s,%s,%s,%s,%d,%d,%d,0,0);", inbound.Port, quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(fmt.Sprintf("inbound-%d", inbound.Port)), quote(inbound.Sniffing), quote(inbound.Remark), quote(inbound.Listen), enable, inbound.ExpiryTime, inbound.Total)
+		statement = fmt.Sprintf("INSERT INTO inbounds (user_id,port,protocol,settings,stream_settings,tag,sniffing,remark,listen,enable,expiry_time,total,up,down) VALUES ((SELECT id FROM sync_owner),%d,%s,%s,%s,%s,%s,%s,%s,%d,%d,%d,0,0);", inbound.Port, quote(string(inbound.Protocol)), quote(inbound.Settings), stream, quote(fmt.Sprintf("inbound-%d", inbound.Port)), quote(inbound.Sniffing), quote(inbound.Remark), quote(inbound.Listen), enable, inbound.ExpiryTime, inbound.Total)
 		if upsert {
 			statement = strings.TrimSuffix(statement, ";") + ` ON CONFLICT(port) DO UPDATE SET user_id=excluded.user_id,protocol=excluded.protocol,settings=excluded.settings,stream_settings=excluded.stream_settings,tag=excluded.tag,sniffing=excluded.sniffing,remark=excluded.remark,listen=excluded.listen,enable=excluded.enable,expiry_time=excluded.expiry_time,total=excluded.total;`
 		}
 
 	} else {
-		statement = fmt.Sprintf("UPDATE inbounds SET user_id=(SELECT id FROM sync_owner),protocol=%s,settings=%s,stream_settings=%s,tag=%s,sniffing=%s,remark=%s,listen=%s,enable=%d,expiry_time=%d,total=%d WHERE port=%d;", quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(fmt.Sprintf("inbound-%d", inbound.Port)), quote(inbound.Sniffing), quote(inbound.Remark), quote(inbound.Listen), enable, inbound.ExpiryTime, inbound.Total, inbound.Port)
+		statement = fmt.Sprintf("UPDATE inbounds SET user_id=(SELECT id FROM sync_owner),protocol=%s,settings=%s,stream_settings=%s,tag=%s,sniffing=%s,remark=%s,listen=%s,enable=%d,expiry_time=%d,total=%d WHERE port=%d;", quote(string(inbound.Protocol)), quote(inbound.Settings), stream, quote(fmt.Sprintf("inbound-%d", inbound.Port)), quote(inbound.Sniffing), quote(inbound.Remark), quote(inbound.Listen), enable, inbound.ExpiryTime, inbound.Total, inbound.Port)
+	}
+	validation := ""
+	if len(paths) > 0 {
+		validation = "CREATE TEMP TABLE sync_cert (cert TEXT NOT NULL CHECK(length(cert)>0), key TEXT NOT NULL CHECK(length(key)>0)); INSERT INTO sync_cert SELECT (SELECT value FROM settings WHERE key='webCertFile'),(SELECT value FROM settings WHERE key='webKeyFile')" + guard + ";"
 	}
 	return fmt.Sprintf(`.timeout 10000
 BEGIN IMMEDIATE;
 CREATE TEMP TABLE sync_owner (id INTEGER NOT NULL);
 INSERT INTO sync_owner SELECT %s%s;
 %s
+%s
 SELECT changes();
 COMMIT;
-`, owner, guard, statement)
+`, owner, guard, validation, statement)
 }
 
 func deleteSyncedInboundSQL(port int) string {
