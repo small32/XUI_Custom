@@ -21,6 +21,7 @@ import (
 var xrayTemplateConfig string
 
 var defaultValueMap = map[string]string{
+	"serverName":         "主服务器",
 	"xrayTemplateConfig": xrayTemplateConfig,
 	"webListen":          "",
 	"webPort":            "54321",

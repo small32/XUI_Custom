@@ -339,11 +339,27 @@
             },
             async showClashSubscription(dbInbound) {
                 if (!dbInbound.hasLink()) return;
-                let links = [dbInbound.genLink()];
+                const localAddress = location.hostname;
+                const panel = await HttpUtil.post('/xui/setting/all');
+                if (!panel.success) { this.$message.error(panel.msg || '读取面板配置失败'); return; }
+                const localName = (panel.obj.serverName || '').trim();
+                if (!localName) { this.$message.error('请在面板配置中设置本地服务器名称'); return; }
+                let links = [dbInbound.genLink(localAddress, localName)];
                 const remote = await HttpUtil.post('/xui/server/inbound/' + dbInbound.port);
-                if (remote.success && remote.obj) {
+                if (!remote.success) {
+                    this.$message.error(remote.msg || '读取远程节点失败');
+                    return;
+                }
+                if (remote.obj) {
                     const remoteInbound = new DBInbound(remote.obj);
-                    const remoteLink = remoteInbound.genLink();
+                    const remoteAddress = remoteInbound.remoteAddress;
+                    if (!remoteAddress) {
+                        this.$message.error('第三方服务器地址为空，请检查服务器管理设置');
+                        return;
+                    }
+                    const remoteName = (remote.obj.remoteName || '').trim();
+                    if (!remoteName) { this.$message.error('请在服务器管理中设置第三方服务器名称'); return; }
+                    const remoteLink = remoteInbound.genLink(remoteAddress, remoteName);
                     if (remoteLink) links.push(remoteLink);
                 }
                 const link = links.join('\n');

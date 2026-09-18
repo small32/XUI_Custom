@@ -37,6 +37,7 @@ class DBInbound {
         this.enable = true;
         this.expiryTime = 0;
 
+        this.remoteAddress = "";
         this.listen = "";
         this.port = 0;
         this.protocol = "";
@@ -150,15 +151,16 @@ class DBInbound {
         }
     }
 
-    genLink() {
+    genLink(address=this.address, remark=this.remark) {
         const inbound = this.toInbound();
-        return inbound.genLink(this.address, this.remark);
+        return inbound.genLink(address, remark);
     }
 }
 
 class AllSetting {
 
     constructor(data) {
+        this.serverName = "主服务器";
         this.webListen = "";
         this.webPort = 54321;
         this.webCertFile = "";

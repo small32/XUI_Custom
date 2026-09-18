@@ -142,7 +142,12 @@ func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{
 	if err != nil {
 		return nil, fmt.Errorf("查询远程端口 %d 失败: %w: %s", port, err, strings.TrimSpace(stderr.String()))
 	}
-	return parseRemoteInbound(out, port, v.Host)
+	node, err := parseRemoteInbound(out, port, v.Host)
+	if err != nil {
+		return nil, err
+	}
+	node["remoteName"] = v.Name
+	return node, nil
 }
 
 func remoteInboundSQL(port int) string {
@@ -230,11 +235,11 @@ func (s *ServerManagementService) GetTrafficCache() ([]*entity.ServerTraffic, er
 }
 
 func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
-	v := entity.ServerSetting{SyncStrategy: "normal"}
+	v := entity.ServerSetting{Name: "第三方服务器", SyncStrategy: "normal"}
 	row := &model.Setting{}
 	err := database.GetDB().Where("key = ?", serverManagementSettingKey).First(row).Error
 	if database.IsNotFound(err) {
-		return &entity.ServerSetting{Port: 22, SyncStrategy: "normal"}, nil
+		return &entity.ServerSetting{Port: 22, Name: "第三方服务器", SyncStrategy: "normal"}, nil
 	}
 	if err != nil {
 		return nil, err

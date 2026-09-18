@@ -8,6 +8,7 @@
 <a-spin :spinning="loadingState" tip="正在读取">
 <a-card title="第三方服务器 SSH 设置">
 <a-form layout="vertical">
+<a-form-item label="第三方服务器名称"><a-input v-model.trim="setting.name" placeholder="用于 Clash 订阅节点名称"></a-input></a-form-item>
 <a-form-item label="服务器地址"><a-input v-model="setting.host" placeholder="例如 b.example.com"></a-input></a-form-item>
 <a-form-item label="SSH 端口"><a-input-number v-model="setting.port" :min="1" :max="65535"></a-input-number></a-form-item>
 <a-form-item label="SSH 用户名"><a-input v-model="setting.username"></a-input></a-form-item>
@@ -30,6 +31,6 @@
 </a-layout>
 {{template "js" .}}
 <script>
-const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,syncStrategy:'normal',heartbeatMinutes:10}},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success)this.setting=Object.assign(this.setting,m.obj);},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success)this.$message.success('保存成功');else this.$message.error(m.msg);}},mounted(){this.loadSetting();}});
+const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{name:'第三方服务器',host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,syncStrategy:'normal',heartbeatMinutes:10}},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success)this.setting=Object.assign(this.setting,m.obj);},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success)this.$message.success('保存成功');else this.$message.error(m.msg);}},mounted(){this.loadSetting();}});
 </script>
 </body></html>
