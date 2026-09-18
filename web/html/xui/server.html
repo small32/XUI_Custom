@@ -14,7 +14,7 @@
 <a-form-item label="SSH 密码"><a-input-password v-model="setting.password" placeholder="留空表示保持原密码"></a-input-password></a-form-item>
 <a-form-item label="超限自动禁用"><a-switch v-model="setting.autoDisable"></a-switch><span style="margin-left:8px">超出本地限制后禁用本地和远程同端口入站</span></a-form-item>
 <a-form-item label="同步账号到第三方服务器"><a-switch v-model="setting.syncAccounts"></a-switch><span style="margin-left:8px">开启后，新建或修改节点时同步账号配置</span></a-form-item>
-<a-form-item label="心跳间隔（分钟）"><a-input-number v-model="setting.heartbeatMinutes" :min="10"></a-input-number><span style="margin-left:8px">最少 10 分钟，自动读取远程数据库</span></a-form-item>
+<a-form-item label="心跳间隔（分钟）"><a-input-number v-model="setting.heartbeatMinutes" :min="10"></a-input-number><span style="margin-left:8px">不能低于 10 分钟（10 分钟允许）</span></a-form-item>
 <a-button type="primary" @click="save">保存设置</a-button>
 <a-button style="margin-left:8px" @click="loadTraffic">读取流量</a-button>
 </a-form>
@@ -24,6 +24,6 @@
 </a-layout>
 {{template "js" .}}
 <script>
-const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,heartbeatMinutes:10},traffic:[]},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success)this.setting=Object.assign(this.setting,m.obj);},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success)this.$message.success('保存成功');else this.$message.error(m.msg);},async loadTraffic(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/traffic');this.loadingState=false;if(m.success)this.traffic=m.obj;else this.$message.error(m.msg);}},mounted(){this.loadSetting();this.loadTraffic()}});
+const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,heartbeatMinutes:10},traffic:[]},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success){this.setting=Object.assign(this.setting,m.obj);return true;}return false;},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success){this.$message.success('保存成功');if(this.setting.host)await this.loadTraffic();}else this.$message.error(m.msg);},async loadTraffic(){if(!this.setting.host)return;this.loadingState=true;let m=await HttpUtil.post('/xui/server/traffic');this.loadingState=false;if(m.success)this.traffic=m.obj;else this.$message.error(m.msg);}},async mounted(){if(await this.loadSetting()&&this.setting.host)this.loadTraffic();}});
 </script>
 </body></html>

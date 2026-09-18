@@ -118,8 +118,11 @@ func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
 	if v.Port < 1 || v.Port > 65535 {
 		return fmt.Errorf("SSH端口无效")
 	}
+	if v.HeartbeatMinutes <= 0 {
+		v.HeartbeatMinutes = 10
+	}
 	if v.HeartbeatMinutes < 10 {
-		return fmt.Errorf("心跳间隔不能少于10分钟")
+		return fmt.Errorf("心跳间隔不能低于10分钟，10分钟可以使用")
 	}
 	old, err := s.GetSetting()
 	if err != nil {
