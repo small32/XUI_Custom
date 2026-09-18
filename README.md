@@ -21,7 +21,7 @@
 
 在入站列表中，点击当前入站的“操作”→“生成 Clash 订阅”→“复制订阅链接”，然后在 Clash 客户端中添加订阅。
 
-订阅采用进阶模式，目标客户端为 Clash，默认转换后端为 [https://api.wcc.best/sub?](https://api.wcc.best/sub?)。远程配置使用 ACL4SSR_Online_Mini 精简版（与 GitHub 同步），生成的是“定制订阅”长链接，不生成短链接。
+订阅采用进阶模式，目标客户端为 Clash，默认转换后端为 [https://api.wcc.best/sub?](https://api.wcc.best/sub?)。远程配置使用 ACL4SSR_Online_Mini 精简版（与 GitHub 同步）。
 
 ## 构建定制版本
 
