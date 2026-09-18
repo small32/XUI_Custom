@@ -699,13 +699,11 @@ class Inbound extends XrayCommonClass {
         }
     }
 
-    // VLess & Trojan
+    // VLess
     get flow() {
         switch (this.protocol) {
             case Protocols.VLESS:
                 return this.settings.vlesses[0].flow;
-            case Protocols.TROJAN:
-                return this.settings.clients[0].flow;
             default:
                 return "";
         }
@@ -1297,23 +1295,20 @@ Inbound.TrojanSettings = class extends Inbound.Settings {
     }
 };
 Inbound.TrojanSettings.Client = class extends XrayCommonClass {
-    constructor(password=RandomUtil.randomSeq(10), flow=FLOW_CONTROL.DIRECT) {
+    constructor(password=RandomUtil.randomSeq(10)) {
         super();
         this.password = password;
-        this.flow = flow;
     }
 
     toJson() {
         return {
             password: this.password,
-            flow: this.flow,
         };
     }
 
     static fromJson(json={}) {
         return new Inbound.TrojanSettings.Client(
             json.password,
-            json.flow,
         );
     }
 
