@@ -2,15 +2,15 @@ name: Release XUI_Custom
 
 on:
   push:
-    tags: ['0.*']
+    tags: ['[0-9]+.[0-9]+.[0-9]+']
     branches: [main]
     paths: [config/version]
   workflow_dispatch:
     inputs:
       version:
-        description: 'New release version (for example 0.3.3)'
+        description: 'New release version (for example 5.0.0)'
         required: true
-        default: '0.3.3'
+        default: '5.0.0'
 
 permissions:
   contents: read
@@ -31,7 +31,7 @@ jobs:
           VERSION: ${{ github.event.inputs.version || github.ref_name }}
         run: |
           if [ "$VERSION" = main ]; then VERSION=$(tr -d '\r\n' < config/version); fi
-          [[ "$VERSION" =~ ^0\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a version such as 0.3.3'; exit 1; }
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Use a version such as 5.0.0'; exit 1; }
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
   build:
@@ -118,6 +118,6 @@ jobs:
             test -s "x-ui-linux-${arch}.tar.gz"
           done
           sha256sum x-ui-linux-*.tar.gz > SHA256SUMS
-          printf '%s\n' '新增入站“生成Clash订阅”：Clash、默认转换后端、ACL4SSR_Mini 本地精简版、定制订阅长链接。' '安装和升级均使用 small32/XUI_Custom。' '包含 Linux amd64、arm64、s390x 安装包及 SHA256SUMS。' '面板版本：'"$VERSION" '打包 Xray-core v26.3.27；amd64 已执行程序启动检查，其他架构已完成交叉编译。' > notes.md
+          printf '%s\n' '修复 Trojan 节点默认生成旧 Flow 导致新版 Xray 无法启动的问题；移除 Trojan Flow 表单选项。' '已有 Trojan 节点需在升级后编辑保存一次，以清除旧 Flow；保留密码和 fallback。' '安装和升级均使用 small32/XUI_Custom。' '包含 Linux amd64、arm64、s390x 安装包及 SHA256SUMS。' '面板版本：'"$VERSION" '打包 Xray-core v26.3.27；amd64 已执行程序启动检查，其他架构已完成交叉编译。' > notes.md
           gh release create "$VERSION" --target "$COMMIT" --title "XUI_Custom $VERSION" --notes-file notes.md --draft x-ui-linux-*.tar.gz SHA256SUMS
           gh release edit "$VERSION" --draft=false --prerelease=false --latest
