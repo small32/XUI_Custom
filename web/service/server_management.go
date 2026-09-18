@@ -135,16 +135,34 @@ func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{
 		return nil, err
 	}
 	defer sess.Close()
-	cmd := fmt.Sprintf("sqlite3 -separator '\\t' /etc/x-ui/x-ui.db 'SELECT protocol, settings, stream_settings, sniffing, remark, port FROM inbounds WHERE port = %d;'", port)
-	out, err := sess.Output(cmd)
+	sess.Stdin = strings.NewReader(remoteInboundSQL(port))
+	var stderr bytes.Buffer
+	sess.Stderr = &stderr
+	out, err := sess.Output("test -f /etc/x-ui/x-ui.db && sqlite3 -batch -noheader -bail /etc/x-ui/x-ui.db")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("查询远程端口 %d 失败: %w: %s", port, err, strings.TrimSpace(stderr.String()))
 	}
-	f := strings.Split(strings.TrimSpace(string(out)), "\t")
-	if len(f) != 6 {
+	return parseRemoteInbound(out, port, v.Host)
+}
+
+func remoteInboundSQL(port int) string {
+	return fmt.Sprintf("SELECT json_object('protocol',protocol,'settings',settings,'streamSettings',stream_settings,'sniffing',sniffing,'remark',remark,'port',port) FROM inbounds WHERE port=%d;", port)
+}
+
+func parseRemoteInbound(out []byte, port int, host string) (map[string]interface{}, error) {
+	if len(bytes.TrimSpace(out)) == 0 {
 		return nil, fmt.Errorf("第三方服务器不存在端口 %d", port)
 	}
-	return map[string]interface{}{"protocol": f[0], "settings": f[1], "streamSettings": f[2], "sniffing": f[3], "remark": f[4], "port": port, "remoteAddress": v.Host}, nil
+	var result map[string]interface{}
+	if err := json.Unmarshal(out, &result); err != nil {
+		return nil, fmt.Errorf("远程端口 %d 返回数据解析失败: %w", port, err)
+	}
+	if result == nil || result["port"] != float64(port) {
+		return nil, fmt.Errorf("远程端口 %d 返回数据不匹配", port)
+	}
+	result["port"] = port
+	result["remoteAddress"] = host
+	return result, nil
 }
 
 const serverManagementSettingKey = "serverManagement"
