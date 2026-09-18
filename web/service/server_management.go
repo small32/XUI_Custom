@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"golang.org/x/crypto/ssh"
@@ -12,6 +13,78 @@ import (
 	"x-ui/database/model"
 	"x-ui/web/entity"
 )
+
+func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
+	v, err := s.GetSetting()
+	if err != nil {
+		return err
+	}
+	if !v.SyncAccounts {
+		return nil
+	}
+	if v.Host == "" {
+		return nil
+	}
+	if v.Password == "" {
+		return fmt.Errorf("未配置第三方服务器SSH密码")
+	}
+	if inbound.Port <= 0 {
+		return fmt.Errorf("节点端口无效")
+	}
+	// The remote panel keeps protocol-specific client JSON in settings. Replace
+	// only the matching port's settings so passwords/UUIDs stay in sync.
+	encoded := base64.StdEncoding.EncodeToString([]byte(inbound.Settings))
+	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
+	if err != nil {
+		return fmt.Errorf("SSH连接失败: %w", err)
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+	cmd := fmt.Sprintf("python3 -c \"import sqlite3,base64; db=sqlite3.connect('/etc/x-ui/x-ui.db'); cur=db.execute('UPDATE inbounds SET settings=? WHERE port=?', (base64.b64decode('%s').decode(), %d)); db.commit(); db.close(); raise SystemExit(0 if cur.rowcount else 2)\"", encoded, inbound.Port)
+	if err := sess.Run(cmd); err != nil {
+		return fmt.Errorf("远程端口 %d 不存在或账号同步失败: %w", inbound.Port, err)
+	}
+	return nil
+}
+
+func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{}, error) {
+	v, err := s.GetSetting()
+	if err != nil {
+		return nil, err
+	}
+	if !v.SyncAccounts || v.Host == "" {
+		return nil, nil
+	}
+	if v.Password == "" {
+		return nil, fmt.Errorf("未配置第三方服务器SSH密码")
+	}
+	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
+	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+	sess, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	defer sess.Close()
+	cmd := fmt.Sprintf("sqlite3 -separator '\\t' /etc/x-ui/x-ui.db 'SELECT protocol, settings, stream_settings, sniffing, remark, port FROM inbounds WHERE port = %d;'", port)
+	out, err := sess.Output(cmd)
+	if err != nil {
+		return nil, err
+	}
+	f := strings.Split(strings.TrimSpace(string(out)), "\t")
+	if len(f) != 6 {
+		return nil, fmt.Errorf("第三方服务器不存在端口 %d", port)
+	}
+	return map[string]interface{}{"protocol": f[0], "settings": f[1], "streamSettings": f[2], "sniffing": f[3], "remark": f[4], "port": port, "remoteAddress": v.Host}, nil
+}
 
 const serverManagementSettingKey = "serverManagement"
 

@@ -14,6 +14,7 @@ import (
 type InboundController struct {
 	inboundService service.InboundService
 	xrayService    service.XrayService
+	serverService  service.ServerManagementService
 }
 
 func NewInboundController(g *gin.RouterGroup) *InboundController {
@@ -69,6 +70,9 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	err = a.inboundService.AddInbound(inbound)
 	jsonMsg(c, "添加", err)
 	if err == nil {
+		if syncErr := a.serverService.SyncInbound(inbound); syncErr != nil {
+			logger.Warning("第三方账号同步失败: ", syncErr)
+		}
 		a.xrayService.SetToNeedRestart()
 	}
 }
@@ -103,6 +107,9 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 	err = a.inboundService.UpdateInbound(inbound)
 	jsonMsg(c, "修改", err)
 	if err == nil {
+		if syncErr := a.serverService.SyncInbound(inbound); syncErr != nil {
+			logger.Warning("第三方账号同步失败: ", syncErr)
+		}
 		a.xrayService.SetToNeedRestart()
 	}
 }

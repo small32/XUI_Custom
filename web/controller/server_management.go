@@ -2,6 +2,7 @@ package controller
 
 import (
 	"github.com/gin-gonic/gin"
+	"strconv"
 	"sync"
 	"time"
 	"x-ui/logger"
@@ -22,6 +23,7 @@ func NewServerManagementController(g *gin.RouterGroup) *ServerManagementControll
 	g.POST("/server/setting", a.setting)
 	g.POST("/server/setting/all", a.getSetting)
 	g.POST("/server/traffic", a.traffic)
+	g.POST("/server/inbound/:port", a.remoteInbound)
 	global.GetWebServer().GetCron().AddFunc("@every 1m", func() {
 		if v, err := a.service.GetSetting(); err == nil && v.Host != "" {
 			a.heartbeatMu.Lock()
@@ -62,6 +64,19 @@ func (a *ServerManagementController) traffic(c *gin.Context) {
 	v, err := a.service.Traffic()
 	if err != nil {
 		jsonMsg(c, "读取服务器流量", err)
+		return
+	}
+	jsonObj(c, v, nil)
+}
+func (a *ServerManagementController) remoteInbound(c *gin.Context) {
+	port, err := strconv.Atoi(c.Param("port"))
+	if err != nil {
+		jsonMsg(c, "读取远程节点", err)
+		return
+	}
+	v, err := a.service.RemoteInbound(port)
+	if err != nil {
+		jsonMsg(c, "读取远程节点", err)
 		return
 	}
 	jsonObj(c, v, nil)

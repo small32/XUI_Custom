@@ -6,6 +6,7 @@ type ServerSetting struct {
 	Username         string `json:"username" form:"username"`
 	Password         string `json:"password,omitempty" form:"password"`
 	AutoDisable      bool   `json:"autoDisable" form:"autoDisable"`
+	SyncAccounts     bool   `json:"syncAccounts" form:"syncAccounts"`
 	HeartbeatMinutes int    `json:"heartbeatMinutes" form:"heartbeatMinutes"`
 }
 

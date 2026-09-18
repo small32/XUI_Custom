@@ -84,6 +84,7 @@ class DBInbound {
     }
 
     get address() {
+        if (!ObjectUtil.isEmpty(this.remoteAddress)) return this.remoteAddress;
         let address = location.hostname;
         if (!ObjectUtil.isEmpty(this.listen) && this.listen !== "0.0.0.0") {
             address = this.listen;

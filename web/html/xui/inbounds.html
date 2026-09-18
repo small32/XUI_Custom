@@ -337,9 +337,16 @@
                 const link = dbInbound.genLink();
                 qrModal.show('二维码', link);
             },
-            showClashSubscription(dbInbound) {
+            async showClashSubscription(dbInbound) {
                 if (!dbInbound.hasLink()) return;
-                const link = dbInbound.genLink();
+                let links = [dbInbound.genLink()];
+                const remote = await HttpUtil.post('/xui/server/inbound/' + dbInbound.port);
+                if (remote.success && remote.obj) {
+                    const remoteInbound = new DBInbound(remote.obj);
+                    const remoteLink = remoteInbound.genLink();
+                    if (remoteLink) links.push(remoteLink);
+                }
+                const link = links.join('\n');
                 if (!link) {
                     this.$message.error('无法生成当前入站的节点链接');
                     return;
