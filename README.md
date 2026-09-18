@@ -19,21 +19,9 @@
 
 # 生成 Clash 订阅
 
-入站列表 → 当前入站的“操作” → “生成Clash订阅” → “复制订阅链接”，然后在 Clash 客户端中添加订阅。
+在入站列表中，点击当前入站的“操作”→“生成 Clash 订阅”→“复制订阅链接”，然后在 Clash 客户端中添加订阅。
 
-生成规则与 [ACL4SSR 在线订阅转换](https://acl4ssr-sub.github.io/) 的以下设置一致（其余参数采用 2026-09-16 网站初始默认值）：
-
-| 设置 | 值 |
-| --- | --- |
-| 模式 | 进阶模式 |
-| 客户端 | Clash |
-| 后端 | 默认：`https://api.wcc.best/sub?` |
-| 远程配置 | ACL4SSR_Online_Mini 精简版（与 Github 同步）：`https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Mini.ini` |
-| 输出 | “定制订阅”长链接，不生成短链接 |
-
-菜单仅对支持生成节点链接的入站显示，与二维码使用同一份节点信息。每次生成包含当前入站，不汇总其他入站；转换后端和客户端是否支持具体协议及传输配置，以实际导入结果为准。
-
-链接在浏览器本地生成；客户端导入或更新订阅时，会把节点信息发送给 `api.wcc.best`。长链接包含节点凭据，请妥善保管。账号、密码、地址或端口等配置变更后，需要重新生成并替换客户端中的订阅链接。
+订阅采用进阶模式，目标客户端为 Clash，默认转换后端为 [https://api.wcc.best/sub?](https://api.wcc.best/sub?)。远程配置使用 ACL4SSR_Online_Mini 精简版（与 GitHub 同步），生成的是“定制订阅”长链接，不生成短链接。
 
 ## 构建定制版本
 
