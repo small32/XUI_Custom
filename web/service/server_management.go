@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -31,7 +32,7 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 	if inbound.Port <= 0 {
 		return fmt.Errorf("节点端口无效")
 	}
-	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	quote := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
 	enable := 0
 	if inbound.Enable {
 		enable = 1
@@ -47,9 +48,17 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 		return err
 	}
 	defer sess.Close()
-	cmd := fmt.Sprintf("python3 -c \"import sqlite3,base64; db=sqlite3.connect('/etc/x-ui/x-ui.db'); d=lambda x:base64.b64decode(x).decode(); vals=(d('%s'),d('%s'),d('%s'),d('%s'),d('%s'),%d,%d,%d,%d,%d); cur=db.execute('UPDATE inbounds SET protocol=?, settings=?, stream_settings=?, tag=?, sniffing=?, remark=?, enable=?, expiry_time=?, total=? WHERE port=?', (vals[0],vals[1],vals[2],vals[3],vals[4],d('%s'),vals[5],vals[6],vals[7],vals[8],vals[9])); db.execute('INSERT INTO inbounds (port,protocol,settings,stream_settings,tag,sniffing,remark,enable,expiry_time,total,up,down) SELECT ?,?,?,?,?,?,?,?,?,?,0,0 WHERE changes()=0', (%d,vals[0],vals[1],vals[2],vals[3],vals[4],d('%s'),vals[5],vals[6],vals[7])); db.commit(); db.close()\" && x-ui restart", enc(string(inbound.Protocol)), enc(inbound.Settings), enc(inbound.StreamSettings), enc(inbound.Tag), enc(inbound.Sniffing), enable, inbound.ExpiryTime, inbound.Total, inbound.Port, inbound.Port, enc(inbound.Remark), inbound.Port, enc(inbound.Remark))
+	sql := fmt.Sprintf("UPDATE inbounds SET protocol='%s',settings='%s',stream_settings='%s',tag='%s',sniffing='%s',remark='%s',enable=%d,expiry_time=%d,total=%d WHERE port=%d; INSERT INTO inbounds (port,protocol,settings,stream_settings,tag,sniffing,remark,enable,expiry_time,total,up,down) SELECT %d,'%s','%s','%s','%s','%s','%s',%d,%d,%d,0,0 WHERE changes()=0;", quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(inbound.Tag), quote(inbound.Sniffing), quote(inbound.Remark), enable, inbound.ExpiryTime, inbound.Total, inbound.Port, inbound.Port, quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(inbound.Tag), quote(inbound.Sniffing), quote(inbound.Remark), enable, inbound.ExpiryTime, inbound.Total)
+	// 通过 base64 传输 SQL，避免 settings/stream_settings 中的引号破坏远程 shell 命令。
+	sql64 := base64.StdEncoding.EncodeToString([]byte(sql))
+	cmd := fmt.Sprintf("echo %s | base64 -d > /tmp/xui-sync.sql && sqlite3 /etc/x-ui/x-ui.db < /tmp/xui-sync.sql; rc=$?; rm -f /tmp/xui-sync.sql; if [ $rc -eq 0 ]; then x-ui restart; else exit $rc; fi", sql64)
+	var stderr bytes.Buffer
+	sess.Stderr = &stderr
 	if err := sess.Run(cmd); err != nil {
-		return fmt.Errorf("远程端口 %d 不存在或账号同步失败: %w", inbound.Port, err)
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return fmt.Errorf("远程端口 %d 账号同步失败: %s: %w", inbound.Port, msg, err)
+		}
+		return fmt.Errorf("远程端口 %d 账号同步失败: %w", inbound.Port, err)
 	}
 	return nil
 }
