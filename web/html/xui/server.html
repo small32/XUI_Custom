@@ -19,11 +19,10 @@
 <a-button style="margin-left:8px" @click="loadTraffic">读取流量</a-button>
 </a-form>
 </a-card>
-<a-card title="远程入站流量" style="margin-top:16px"><a-table :data-source="traffic" :pagination="false" row-key="port"><a-table-column title="端口" data-index="port"></a-table-column><a-table-column title="上传" data-index="up"></a-table-column><a-table-column title="下载" data-index="down"></a-table-column><a-table-column title="已用" data-index="used"></a-table-column><a-table-column title="限制" data-index="total"></a-table-column><a-table-column title="状态"><template slot-scope="text,row">[[ row.enable ? '启用' : '停用' ]]</template></a-table-column></a-table></a-card>
 </a-spin></a-layout-content></a-layout>
 </a-layout>
 {{template "js" .}}
 <script>
-const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,heartbeatMinutes:10},traffic:[]},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success){this.setting=Object.assign(this.setting,m.obj);return true;}return false;},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success){this.$message.success('保存成功');if(this.setting.host)await this.loadTraffic();}else this.$message.error(m.msg);},async loadTraffic(){if(!this.setting.host)return;this.loadingState=true;let m=await HttpUtil.post('/xui/server/traffic');this.loadingState=false;if(m.success)this.traffic=m.obj;else this.$message.error(m.msg);}},async mounted(){if(await this.loadSetting()&&this.setting.host)this.loadTraffic();}});
+const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,heartbeatMinutes:10}},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success)this.setting=Object.assign(this.setting,m.obj);},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success)this.$message.success('保存成功');else this.$message.error(m.msg);}},mounted(){this.loadSetting();}});
 </script>
 </body></html>

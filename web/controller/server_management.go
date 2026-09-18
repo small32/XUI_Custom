@@ -23,6 +23,8 @@ func NewServerManagementController(g *gin.RouterGroup) *ServerManagementControll
 	g.POST("/server/setting", a.setting)
 	g.POST("/server/setting/all", a.getSetting)
 	g.POST("/server/traffic", a.traffic)
+	g.GET("/traffic-summary", a.summaryPage)
+	g.POST("/traffic-summary/list", a.summary)
 	g.POST("/server/inbound/:port", a.remoteInbound)
 	global.GetWebServer().GetCron().AddFunc("@every 1m", func() {
 		if v, err := a.service.GetSetting(); err == nil && v.Host != "" {
@@ -33,7 +35,12 @@ func NewServerManagementController(g *gin.RouterGroup) *ServerManagementControll
 			}
 			a.lastHeartbeat = time.Now()
 			a.heartbeatMu.Unlock()
-			if _, err = a.service.Traffic(); err != nil {
+			if traffic, e := a.service.Traffic(); e != nil {
+				err = e
+			} else if e = a.service.SaveTrafficCache(traffic); e != nil {
+				err = e
+			}
+			if err != nil {
 				logger.Warning("服务器流量审计失败: ", err)
 			}
 		}
@@ -64,6 +71,17 @@ func (a *ServerManagementController) traffic(c *gin.Context) {
 	v, err := a.service.Traffic()
 	if err != nil {
 		jsonMsg(c, "读取服务器流量", err)
+		return
+	}
+	jsonObj(c, v, nil)
+}
+func (a *ServerManagementController) summaryPage(c *gin.Context) {
+	html(c, "traffic_summary.html", "流量汇总", nil)
+}
+func (a *ServerManagementController) summary(c *gin.Context) {
+	v, err := a.service.Summary()
+	if err != nil {
+		jsonMsg(c, "获取流量汇总", err)
 		return
 	}
 	jsonObj(c, v, nil)

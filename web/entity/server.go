@@ -18,3 +18,12 @@ type ServerTraffic struct {
 	Total  int64 `json:"total"`
 	Enable bool  `json:"enable"`
 }
+type TrafficSummary struct {
+	Username string `json:"username"`
+	Port     int    `json:"port"`
+	Local    int64  `json:"local"`
+	Remote   int64  `json:"remote"`
+	Total    int64  `json:"total"`
+	Limit    int64  `json:"limit"`
+	Enable   bool   `json:"enable"`
+}

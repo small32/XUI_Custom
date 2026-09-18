@@ -31,9 +31,11 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 	if inbound.Port <= 0 {
 		return fmt.Errorf("节点端口无效")
 	}
-	// The remote panel keeps protocol-specific client JSON in settings. Replace
-	// only the matching port's settings so passwords/UUIDs stay in sync.
-	encoded := base64.StdEncoding.EncodeToString([]byte(inbound.Settings))
+	enc := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
+	enable := 0
+	if inbound.Enable {
+		enable = 1
+	}
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
 	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
@@ -45,7 +47,7 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 		return err
 	}
 	defer sess.Close()
-	cmd := fmt.Sprintf("python3 -c \"import sqlite3,base64; db=sqlite3.connect('/etc/x-ui/x-ui.db'); cur=db.execute('UPDATE inbounds SET settings=? WHERE port=?', (base64.b64decode('%s').decode(), %d)); db.commit(); db.close(); raise SystemExit(0 if cur.rowcount else 2)\"", encoded, inbound.Port)
+	cmd := fmt.Sprintf("python3 -c \"import sqlite3,base64; db=sqlite3.connect('/etc/x-ui/x-ui.db'); d=lambda x:base64.b64decode(x).decode(); vals=(d('%s'),d('%s'),d('%s'),d('%s'),d('%s'),%d,%d,%d,%d,%d); cur=db.execute('UPDATE inbounds SET protocol=?, settings=?, stream_settings=?, tag=?, sniffing=?, remark=?, enable=?, expiry_time=?, total=? WHERE port=?', (vals[0],vals[1],vals[2],vals[3],vals[4],d('%s'),vals[5],vals[6],vals[7],vals[8],vals[9])); db.execute('INSERT INTO inbounds (port,protocol,settings,stream_settings,tag,sniffing,remark,enable,expiry_time,total,up,down) SELECT ?,?,?,?,?,?,?,?,?,?,0,0 WHERE changes()=0', (%d,vals[0],vals[1],vals[2],vals[3],vals[4],d('%s'),vals[5],vals[6],vals[7])); db.commit(); db.close()\" && x-ui restart", enc(string(inbound.Protocol)), enc(inbound.Settings), enc(inbound.StreamSettings), enc(inbound.Tag), enc(inbound.Sniffing), enable, inbound.ExpiryTime, inbound.Total, inbound.Port, inbound.Port, enc(inbound.Remark), inbound.Port, enc(inbound.Remark))
 	if err := sess.Run(cmd); err != nil {
 		return fmt.Errorf("远程端口 %d 不存在或账号同步失败: %w", inbound.Port, err)
 	}
@@ -89,6 +91,66 @@ func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{
 const serverManagementSettingKey = "serverManagement"
 
 type ServerManagementService struct{}
+
+func (s *ServerManagementService) Summary() ([]*entity.TrafficSummary, error) {
+	remote, err := s.GetTrafficCache()
+	if err != nil {
+		return nil, err
+	}
+	by := map[int]*entity.ServerTraffic{}
+	for _, v := range remote {
+		by[v.Port] = v
+	}
+	var local []model.Inbound
+	if err = database.GetDB().Find(&local).Error; err != nil {
+		return nil, err
+	}
+	out := make([]*entity.TrafficSummary, 0, len(local))
+	for _, in := range local {
+		r := by[in.Port]
+		var ru int64
+		re := true
+		if r != nil {
+			ru = r.Used
+			re = r.Enable
+		}
+		lu := in.Up + in.Down
+		out = append(out, &entity.TrafficSummary{Username: in.Remark, Port: in.Port, Local: lu, Remote: ru, Total: lu + ru, Limit: in.Total, Enable: in.Enable && re})
+	}
+	return out, nil
+}
+
+const trafficCacheKey = "serverTrafficCache"
+
+func (s *ServerManagementService) SaveTrafficCache(v []*entity.ServerTraffic) error {
+	b, _ := json.Marshal(v)
+	db := database.GetDB()
+	row := &model.Setting{}
+	err := db.Where("key = ?", trafficCacheKey).First(row).Error
+	if database.IsNotFound(err) {
+		return db.Create(&model.Setting{Key: trafficCacheKey, Value: string(b)}).Error
+	}
+	if err != nil {
+		return err
+	}
+	row.Value = string(b)
+	return db.Save(row).Error
+}
+func (s *ServerManagementService) GetTrafficCache() ([]*entity.ServerTraffic, error) {
+	row := &model.Setting{}
+	err := database.GetDB().Where("key = ?", trafficCacheKey).First(row).Error
+	if database.IsNotFound(err) {
+		return []*entity.ServerTraffic{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var v []*entity.ServerTraffic
+	if err = json.Unmarshal([]byte(row.Value), &v); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
 
 func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
 	var v entity.ServerSetting
@@ -184,9 +246,18 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 		result = append(result, &entity.ServerTraffic{Port: port, Up: up, Down: down, Used: up + down, Total: total, Enable: en == 1})
 	}
 	if v.AutoDisable {
+		var localInbounds []model.Inbound
+		if err := database.GetDB().Find(&localInbounds).Error; err != nil {
+			return nil, err
+		}
+		localByPort := map[int]model.Inbound{}
+		for _, in := range localInbounds {
+			localByPort[in.Port] = in
+		}
 		changed := false
 		for _, item := range result {
-			if item.Total <= 0 || item.Used < item.Total {
+			local, exists := localByPort[item.Port]
+			if !exists || local.Total <= 0 || local.Up+local.Down+item.Used < local.Total {
 				continue
 			}
 			if err := s.disableLocal(item.Port); err != nil {
