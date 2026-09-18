@@ -1,6 +1,7 @@
 package entity
 
 type ServerSetting struct {
+	SyncStrategy     string `json:"syncStrategy" form:"syncStrategy"`
 	Host             string `json:"host" form:"host"`
 	Port             int    `json:"port" form:"port"`
 	Username         string `json:"username" form:"username"`

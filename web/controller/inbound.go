@@ -68,13 +68,14 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	inbound.Enable = true
 	inbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
 	err = a.inboundService.AddInbound(inbound)
-	jsonMsg(c, "添加", err)
 	if err == nil {
-		if syncErr := a.serverService.SyncInbound(inbound); syncErr != nil {
+		if syncErr := a.serverService.SyncInbound(inbound, true); syncErr != nil {
 			logger.Warning("第三方账号同步失败: ", syncErr)
+			err = fmt.Errorf("本地账号已创建，但第三方同步失败: %w", syncErr)
 		}
 		a.xrayService.SetToNeedRestart()
 	}
+	jsonMsg(c, "添加", err)
 }
 
 func (a *InboundController) delInbound(c *gin.Context) {
@@ -83,11 +84,19 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		jsonMsg(c, "删除", err)
 		return
 	}
+	inbound, err := a.inboundService.GetInbound(id)
+	if err != nil {
+		jsonMsg(c, "删除", err)
+		return
+	}
 	err = a.inboundService.DelInbound(id)
-	jsonMsg(c, "删除", err)
 	if err == nil {
 		a.xrayService.SetToNeedRestart()
+		if syncErr := a.serverService.DeleteSyncedInbound(inbound); syncErr != nil {
+			err = fmt.Errorf("本地账号已删除，但第三方同步删除失败: %w", syncErr)
+		}
 	}
+	jsonMsg(c, "删除", err)
 }
 
 func (a *InboundController) updateInbound(c *gin.Context) {
@@ -105,11 +114,12 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		return
 	}
 	err = a.inboundService.UpdateInbound(inbound)
-	jsonMsg(c, "修改", err)
 	if err == nil {
-		if syncErr := a.serverService.SyncInbound(inbound); syncErr != nil {
+		if syncErr := a.serverService.SyncInbound(inbound, false); syncErr != nil {
 			logger.Warning("第三方账号同步失败: ", syncErr)
+			err = fmt.Errorf("本地账号已修改，但第三方同步失败: %w", syncErr)
 		}
 		a.xrayService.SetToNeedRestart()
 	}
+	jsonMsg(c, "修改", err)
 }

@@ -2,7 +2,6 @@ package service
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"golang.org/x/crypto/ssh"
@@ -15,7 +14,15 @@ import (
 	"x-ui/web/entity"
 )
 
-func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
+func (s *ServerManagementService) SyncInbound(inbound *model.Inbound, create bool) error {
+	return s.syncInbound(inbound, create, false)
+}
+
+func (s *ServerManagementService) DeleteSyncedInbound(inbound *model.Inbound) error {
+	return s.syncInbound(inbound, false, true)
+}
+
+func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, remove bool) error {
 	v, err := s.GetSetting()
 	if err != nil {
 		return err
@@ -32,11 +39,6 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 	if inbound.Port <= 0 {
 		return fmt.Errorf("节点端口无效")
 	}
-	quote := func(s string) string { return strings.ReplaceAll(s, "'", "''") }
-	enable := 0
-	if inbound.Enable {
-		enable = 1
-	}
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
 	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
@@ -48,10 +50,12 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 		return err
 	}
 	defer sess.Close()
-	sql := fmt.Sprintf("UPDATE inbounds SET protocol='%s',settings='%s',stream_settings='%s',tag='%s',sniffing='%s',remark='%s',enable=%d,expiry_time=%d,total=%d WHERE port=%d; INSERT INTO inbounds (port,protocol,settings,stream_settings,tag,sniffing,remark,enable,expiry_time,total,up,down) SELECT %d,'%s','%s','%s','%s','%s','%s',%d,%d,%d,0,0 WHERE changes()=0;", quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(inbound.Tag), quote(inbound.Sniffing), quote(inbound.Remark), enable, inbound.ExpiryTime, inbound.Total, inbound.Port, inbound.Port, quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(inbound.Tag), quote(inbound.Sniffing), quote(inbound.Remark), enable, inbound.ExpiryTime, inbound.Total)
-	// 通过 base64 传输 SQL，避免 settings/stream_settings 中的引号破坏远程 shell 命令。
-	sql64 := base64.StdEncoding.EncodeToString([]byte(sql))
-	cmd := fmt.Sprintf("echo %s | base64 -d > /tmp/xui-sync.sql && sqlite3 /etc/x-ui/x-ui.db < /tmp/xui-sync.sql; rc=$?; rm -f /tmp/xui-sync.sql; if [ $rc -eq 0 ]; then x-ui restart; else exit $rc; fi", sql64)
+	sql := syncInboundSQL(inbound, create, v.SyncStrategy == "full")
+	if remove {
+		sql = deleteSyncedInboundSQL(inbound.Port)
+	}
+	sess.Stdin = strings.NewReader(sql)
+	cmd := `test -f /etc/x-ui/x-ui.db || exit 1; changed=$(sqlite3 -bail /etc/x-ui/x-ui.db) || exit $?; if [ "$changed" = "1" ]; then systemctl restart x-ui; fi`
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
 	if err := sess.Run(cmd); err != nil {
@@ -61,6 +65,42 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound) error {
 		return fmt.Errorf("远程端口 %d 账号同步失败: %w", inbound.Port, err)
 	}
 	return nil
+}
+
+// A missing owner makes an inbound invisible to the remote panel. Preserve an
+// existing valid owner; infer a new owner only when the remote panel has one user.
+func syncInboundSQL(inbound *model.Inbound, create bool, full ...bool) string {
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	enable := 0
+	if inbound.Enable {
+		enable = 1
+	}
+	owner := fmt.Sprintf("COALESCE((SELECT user_id FROM inbounds WHERE port=%d AND user_id IN (SELECT id FROM users)), (SELECT min(id) FROM users HAVING count(*)=1))", inbound.Port)
+	upsert := !create && len(full) > 0 && full[0]
+	guard := fmt.Sprintf(" WHERE EXISTS (SELECT 1 FROM inbounds WHERE port=%d)", inbound.Port)
+	var statement string
+	if create || upsert {
+		guard = ""
+		statement = fmt.Sprintf("INSERT INTO inbounds (user_id,port,protocol,settings,stream_settings,tag,sniffing,remark,listen,enable,expiry_time,total,up,down) VALUES ((SELECT id FROM sync_owner),%d,%s,%s,%s,%s,%s,%s,%s,%d,%d,%d,0,0);", inbound.Port, quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(fmt.Sprintf("inbound-%d", inbound.Port)), quote(inbound.Sniffing), quote(inbound.Remark), quote(inbound.Listen), enable, inbound.ExpiryTime, inbound.Total)
+		if upsert {
+			statement = strings.TrimSuffix(statement, ";") + ` ON CONFLICT(port) DO UPDATE SET user_id=excluded.user_id,protocol=excluded.protocol,settings=excluded.settings,stream_settings=excluded.stream_settings,tag=excluded.tag,sniffing=excluded.sniffing,remark=excluded.remark,listen=excluded.listen,enable=excluded.enable,expiry_time=excluded.expiry_time,total=excluded.total;`
+		}
+
+	} else {
+		statement = fmt.Sprintf("UPDATE inbounds SET user_id=(SELECT id FROM sync_owner),protocol=%s,settings=%s,stream_settings=%s,tag=%s,sniffing=%s,remark=%s,listen=%s,enable=%d,expiry_time=%d,total=%d WHERE port=%d;", quote(string(inbound.Protocol)), quote(inbound.Settings), quote(inbound.StreamSettings), quote(fmt.Sprintf("inbound-%d", inbound.Port)), quote(inbound.Sniffing), quote(inbound.Remark), quote(inbound.Listen), enable, inbound.ExpiryTime, inbound.Total, inbound.Port)
+	}
+	return fmt.Sprintf(`.timeout 10000
+BEGIN IMMEDIATE;
+CREATE TEMP TABLE sync_owner (id INTEGER NOT NULL);
+INSERT INTO sync_owner SELECT %s%s;
+%s
+SELECT changes();
+COMMIT;
+`, owner, guard, statement)
+}
+
+func deleteSyncedInboundSQL(port int) string {
+	return fmt.Sprintf(".timeout 10000\nBEGIN IMMEDIATE;\nDELETE FROM inbounds WHERE port=%d;\nSELECT changes();\nCOMMIT;\n", port)
 }
 
 func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{}, error) {
@@ -162,11 +202,11 @@ func (s *ServerManagementService) GetTrafficCache() ([]*entity.ServerTraffic, er
 }
 
 func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
-	var v entity.ServerSetting
+	v := entity.ServerSetting{SyncStrategy: "normal"}
 	row := &model.Setting{}
 	err := database.GetDB().Where("key = ?", serverManagementSettingKey).First(row).Error
 	if database.IsNotFound(err) {
-		return &entity.ServerSetting{Port: 22}, nil
+		return &entity.ServerSetting{Port: 22, SyncStrategy: "normal"}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -183,6 +223,12 @@ func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
 	return &v, nil
 }
 func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
+	if v.SyncStrategy == "" {
+		v.SyncStrategy = "normal"
+	}
+	if v.SyncStrategy != "normal" && v.SyncStrategy != "full" {
+		return fmt.Errorf("同步策略无效")
+	}
 	if strings.TrimSpace(v.Host) == "" || strings.TrimSpace(v.Username) == "" {
 		return fmt.Errorf("服务器地址和用户名不能为空")
 	}

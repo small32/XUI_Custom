@@ -13,7 +13,15 @@
 <a-form-item label="SSH 用户名"><a-input v-model="setting.username"></a-input></a-form-item>
 <a-form-item label="SSH 密码"><a-input type="password" v-model="setting.password" placeholder="留空表示保持原密码"></a-input></a-form-item>
 <a-form-item label="超限自动禁用"><a-switch v-model="setting.autoDisable"></a-switch><span style="margin-left:8px">超出本地限制后禁用本地和远程同端口入站</span></a-form-item>
-<a-form-item label="同步账号到第三方服务器"><a-switch v-model="setting.syncAccounts"></a-switch><span style="margin-left:8px">开启后，新建或修改节点时同步账号配置</span></a-form-item>
+<a-form-item label="同步账号到第三方服务器"><a-switch v-model="setting.syncAccounts"></a-switch><span style="margin-left:8px">开启后，按所选策略同步新增、修改和删除操作</span></a-form-item>
+<a-form-item label="同步策略">
+<a-select v-model="setting.syncStrategy" :disabled="!setting.syncAccounts" style="width:200px">
+<a-select-option value="full">完全同步</a-select-option>
+<a-select-option value="normal">普通同步</a-select-option>
+</a-select>
+<div>完全同步：新增时远程新增；修改时更新相同端口，不存在则新增；删除时删除远程相同端口。</div>
+<div>普通同步：新增时远程新增；修改时只更新远程相同端口，不存在则跳过；删除时删除远程相同端口。</div>
+</a-form-item>
 <a-form-item label="心跳间隔（分钟）"><a-input-number v-model="setting.heartbeatMinutes" :min="10"></a-input-number><span style="margin-left:8px">不能低于 10 分钟（10 分钟允许）</span></a-form-item>
 <a-button type="primary" @click="save">保存设置</a-button>
 </a-form>
@@ -22,6 +30,6 @@
 </a-layout>
 {{template "js" .}}
 <script>
-const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,heartbeatMinutes:10}},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success)this.setting=Object.assign(this.setting,m.obj);},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success)this.$message.success('保存成功');else this.$message.error(m.msg);}},mounted(){this.loadSetting();}});
+const app = new Vue({delimiters:['[[',']]'],el:'#app',data:{siderDrawer,loadingState:false,setting:{host:'',port:22,username:'root',password:'',autoDisable:false,syncAccounts:false,syncStrategy:'normal',heartbeatMinutes:10}},methods:{async loadSetting(){let m=await HttpUtil.post('/xui/server/setting/all');if(m.success)this.setting=Object.assign(this.setting,m.obj);},async save(){this.loadingState=true;let m=await HttpUtil.post('/xui/server/setting',this.setting);this.loadingState=false;if(m.success)this.$message.success('保存成功');else this.$message.error(m.msg);}},mounted(){this.loadSetting();}});
 </script>
 </body></html>
