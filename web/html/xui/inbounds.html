@@ -121,7 +121,7 @@
     </a-layout>
     <a-modal v-model="clashSubscriptionVisible" title="Clash 定制订阅（长链接）"
              :footer="null">
-        <p>ACL4SSR_Mini 本地 精简版 · 默认后端 api.wcc.best</p>
+        <p>ACL4SSR_Online_Mini 精简版（与 Github 同步） · 默认后端 api.wcc.best</p>
         <a-input type="textarea" :value="clashSubscriptionUrl" readonly
                  :autosize="{ minRows: 4, maxRows: 10 }"></a-input>
         <p style="margin-top: 12px">导入或更新订阅时，节点信息将发送到上述转换后端。</p>
@@ -354,7 +354,7 @@
                 // Match acl4ssr-sub.github.io advanced-mode defaults (2026-09-16).
                 this.clashSubscriptionUrl = 'https://api.wcc.best/sub?target=clash&url='
                     + encodeURIComponent(link)
-                    + '&insert=false&config=' + encodeURIComponent('config/ACL4SSR_Mini.ini')
+                    + '&insert=false&config=' + encodeURIComponent('https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Mini.ini')
                     + '&emoji=true&list=false&tfo=false&scv=true&fdn=false'
                     + '&expand=true&sort=false&new_name=true';
                 this.clashSubscriptionVisible = true;

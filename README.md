@@ -28,7 +28,7 @@
 | 模式 | 进阶模式 |
 | 客户端 | Clash |
 | 后端 | 默认：`https://api.wcc.best/sub?` |
-| 远程配置 | ACL4SSR_Mini 本地 精简版：`config/ACL4SSR_Mini.ini` |
+| 远程配置 | ACL4SSR_Online_Mini 精简版（与 Github 同步）：`https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Mini.ini` |
 | 输出 | “定制订阅”长链接，不生成短链接 |
 
 菜单仅对支持生成节点链接的入站显示，与二维码使用同一份节点信息。每次生成包含当前入站，不汇总其他入站；转换后端和客户端是否支持具体协议及传输配置，以实际导入结果为准。
