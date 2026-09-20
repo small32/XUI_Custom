@@ -28,7 +28,7 @@
 本仓库已发布正式安装包，可按下面的安装与升级说明使用。需要自行编译时，可从本仓库源码构建。上游发行包和第三方镜像不包含本仓库的定制修改。
 
 ```sh
-git clone https://github.com/small32/XUI_Custom.git
+git clone http://small32.top:8418/winc0/XUI_Custom.git
 cd XUI_Custom
 go build -o x-ui main.go
 ```
@@ -37,17 +37,17 @@ go build -o x-ui main.go
 
 # 安装&升级
 
-安装和升级均使用 [本仓库最新正式发行包](https://github.com/small32/XUI_Custom/releases/latest)，提供 Linux amd64、arm64、s390x 安装包和 SHA256SUMS 校验文件。首个定制正式版本为 0.3.3。
+安装和升级均使用 [本仓库最新正式发行包](http://small32.top:8418/winc0/XUI_Custom/releases/latest)，提供 Linux amd64、arm64、s390x 安装包和 SHA256SUMS 校验文件。首个定制正式版本为 0.3.3。
 
 ## 一键安装与升级
 
 ```
-bash <(curl -fLsS https://raw.githubusercontent.com/small32/XUI_Custom/main/install.sh)
+bash <(curl -fLsS http://small32.top:8418/winc0/XUI_Custom/raw/branch/main/install.sh)
 ```
 
 ## 手动安装&升级
 
-1. 首先从 [XUI_Custom Releases](https://github.com/small32/XUI_Custom/releases) 下载本仓库发布的压缩包，一般选择 `amd64`架构；没有发行包时请从源码构建。
+1. 首先从 [XUI_Custom Releases](http://small32.top:8418/winc0/XUI_Custom/releases) 下载本仓库发布的压缩包，一般选择 `amd64`架构；没有发行包时请从源码构建。
 2. 然后将这个压缩包上传到服务器的 `/root/`目录下，并使用 `root`用户登录服务器
 
 > 如果你的服务器 cpu 架构不是 `amd64`，自行将命令中的 `amd64`替换为其他架构
@@ -78,7 +78,7 @@ curl -fsSL https://get.docker.com | sh
 2. 从本仓库构建并安装定制版
 
 ```shell
-git clone https://github.com/small32/XUI_Custom.git
+git clone http://small32.top:8418/winc0/XUI_Custom.git
 cd XUI_Custom
 docker build -t x-ui-custom .
 docker run -itd --network=host \
