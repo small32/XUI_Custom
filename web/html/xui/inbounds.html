@@ -61,7 +61,7 @@
                                             <a-icon type="qrcode"></a-icon>二维码
                                         </a-menu-item>
                                         <a-menu-item v-if="dbInbound.hasLink()" key="clashSubscription">
-                                            <a-icon type="link"></a-icon>生成Clash订阅
+                                            <a-icon type="link"></a-icon>生成订阅
                                         </a-menu-item>
                                         <a-menu-item key="edit">
                                             <a-icon type="edit"></a-icon>编辑
@@ -119,9 +119,17 @@
             </a-spin>
         </a-layout-content>
     </a-layout>
-    <a-modal v-model="clashSubscriptionVisible" title="Clash 定制订阅（长链接）"
+    <a-modal v-model="clashSubscriptionVisible" title="生成订阅"
              :footer="null">
         <p>ACL4SSR_Online_Mini 精简版（与 Github 同步） · 默认后端 api.wcc.best</p>
+        <a-form layout="vertical">
+            <a-form-item label="订阅方式">
+                <a-select v-model="subscriptionTarget" @change="updateSubscriptionUrl">
+                    <a-select-option value="clash">Clash（Shadowrocket、Stash兼容）</a-select-option>
+                    <a-select-option value="surge">Surge</a-select-option>
+                </a-select>
+            </a-form-item>
+        </a-form>
         <a-input type="textarea" :value="clashSubscriptionUrl" readonly
                  :autosize="{ minRows: 4, maxRows: 10 }"></a-input>
         <p style="margin-top: 12px">导入或更新订阅时，节点信息将发送到上述转换后端。</p>
@@ -195,6 +203,8 @@
             searchKey: '',
             clashSubscriptionVisible: false,
             clashSubscriptionUrl: '',
+            subscriptionTarget: 'clash',
+            subscriptionNodes: '',
         },
         methods: {
             loading(spinning=true) {
@@ -337,6 +347,14 @@
                 const link = dbInbound.genLink();
                 qrModal.show('二维码', link);
             },
+            updateSubscriptionUrl() {
+                this.clashSubscriptionUrl = 'https://api.wcc.best/sub?target=' + this.subscriptionTarget
+                    + (this.subscriptionTarget === 'surge' ? '&ver=4' : '') + '&url='
+                    + encodeURIComponent(this.subscriptionNodes)
+                    + '&insert=false&config=' + encodeURIComponent('https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Mini.ini')
+                    + '&emoji=true&list=false&tfo=false&scv=true&fdn=false'
+                    + '&expand=true&sort=false&new_name=true';
+            },
             async showClashSubscription(dbInbound) {
                 if (!dbInbound.hasLink()) return;
                 const localAddress = location.hostname;
@@ -367,12 +385,8 @@
                     this.$message.error('无法生成当前入站的节点链接');
                     return;
                 }
-                // Match acl4ssr-sub.github.io advanced-mode defaults (2026-09-16).
-                this.clashSubscriptionUrl = 'https://api.wcc.best/sub?target=clash&url='
-                    + encodeURIComponent(link)
-                    + '&insert=false&config=' + encodeURIComponent('https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/config/ACL4SSR_Online_Mini.ini')
-                    + '&emoji=true&list=false&tfo=false&scv=true&fdn=false'
-                    + '&expand=true&sort=false&new_name=true';
+                this.subscriptionNodes = link;
+                this.updateSubscriptionUrl();
                 this.clashSubscriptionVisible = true;
                 this.$nextTick(() => {
                     if (!this.clashSubscriptionClipboard) {
