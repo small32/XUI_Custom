@@ -36,8 +36,8 @@ if [[ $arch == "x86_64" || $arch == "x64" || $arch == "amd64" ]]; then
 elif [[ $arch == "aarch64" || $arch == "arm64" ]]; then
     arch="arm64"
 else
-    arch="amd64"
-    echo -e "${red}检测架构失败，使用默认架构: ${arch}${plain}"
+    echo -e "${red}不支持的 CPU 架构: ${arch}。本程序仅提供 amd64 与 arm64 安装包，不支持 s390x 等其他架构。${plain}"
+    exit 1
 fi
 
 echo "架构: ${arch}"
