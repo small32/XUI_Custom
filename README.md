@@ -37,7 +37,7 @@ go build -o x-ui main.go
 
 # 安装&升级
 
-安装和升级均使用 [本仓库最新正式发行包](http://small32.top:8418/winc0/XUI_Custom/releases/latest)，提供 Linux amd64、arm64、s390x 安装包和 SHA256SUMS 校验文件。首个定制正式版本为 0.3.3。
+安装和升级均使用 [本仓库最新正式发行包](http://small32.top:8418/winc0/XUI_Custom/releases/latest)，提供 Linux amd64、arm64 安装包和 SHA256SUMS 校验文件。首个定制正式版本为 0.3.3。
 
 ## 一键安装与升级
 
