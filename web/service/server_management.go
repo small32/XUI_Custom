@@ -14,6 +14,7 @@ import (
 	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/web/entity"
+	"x-ui/logger"
 )
 
 func (s *ServerManagementService) SyncInbound(inbound *model.Inbound, create bool) error {
@@ -21,7 +22,17 @@ func (s *ServerManagementService) SyncInbound(inbound *model.Inbound, create boo
 }
 
 func (s *ServerManagementService) DeleteSyncedInbound(inbound *model.Inbound) error {
-	return s.syncInbound(inbound, false, true)
+	err := s.syncInbound(inbound, false, true)
+	if err != nil {
+		// 同步删除失败，记录端口到待处理队列，提示管理员手动处理
+		if addErr := s.AddPendingDelete(inbound.Port); addErr != nil {
+			logger.Warning("记录待删除端口失败: ", addErr)
+		}
+		return err
+	}
+	// 同步成功，清除该端口的待处理记录（如果存在）
+	s.ClearPendingDelete(inbound.Port)
+	return nil
 }
 
 func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, remove bool) error {
@@ -248,6 +259,45 @@ func (s *ServerManagementService) Summary(inboundId int) ([]*entity.TrafficSumma
 	return out, nil
 }
 
+// forceHeartbeat 强制执行一次远端流量心跳（拉取远程流量、审计禁用并刷新缓存）。
+// 独立成变量是为了在测试中替换，避免真实 SSH 连接。定时心跳的节流状态
+// （lastHeartbeat）保存在 controller 层，这里不触碰，因此不影响定时心跳节奏。
+var forceHeartbeat = func() {
+	if _, err := new(ServerManagementService).Traffic(); err != nil {
+		logger.Warning("删除账号后的强制流量心跳失败: ", err)
+	}
+}
+
+// ResetPortTrafficCache 删除账号后调用：清掉本地缓存里该端口的远程流量条目，
+// 并强制触发一次心跳。否则端口被新账号复用时，会继承旧账号的缓存用量，
+// 在下一次心跳前被自动禁用（新账号上传、下载均为 0 仍被停用）。
+//
+// 缓存清理同步完成并持有 serverStateMu，与 Traffic() 的写回串行，防止并发
+// 心跳把旧条目又写回来；心跳本身异步执行，SSH 慢时不会拖住删除请求。
+func (s *ServerManagementService) ResetPortTrafficCache(port int) {
+	serverStateMu.Lock()
+	cache, err := s.GetTrafficCache()
+	if err == nil && len(cache) > 0 {
+		kept := make([]*entity.ServerTraffic, 0, len(cache))
+		changed := false
+		for _, v := range cache {
+			if v.Port == port {
+				changed = true
+				continue
+			}
+			kept = append(kept, v)
+		}
+		if changed {
+			err = s.SaveTrafficCache(kept)
+		}
+	}
+	serverStateMu.Unlock()
+	if err != nil {
+		logger.Warning("删除账号后清理端口流量缓存失败: ", err)
+	}
+	go forceHeartbeat()
+}
+
 const trafficCacheKey = "serverTrafficCache"
 
 func (s *ServerManagementService) SaveTrafficCache(v []*entity.ServerTraffic) error {
@@ -363,6 +413,53 @@ func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
 		}
 		return nil
 	})
+}
+
+// AddPendingDelete 将端口添加到待删除队列，用于同步失败时的手动处理提醒。
+func (s *ServerManagementService) AddPendingDelete(port int) error {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
+	v, err := s.GetSetting()
+	if err != nil {
+		return err
+	}
+	// 检查端口是否已存在
+	for _, p := range v.PendingDeletes {
+		if p == port {
+			return nil
+		}
+	}
+	v.PendingDeletes = append(v.PendingDeletes, port)
+	return s.SaveSetting(v)
+}
+
+// ClearPendingDelete 从待删除队列中移除指定端口。
+func (s *ServerManagementService) ClearPendingDelete(port int) {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
+	v, err := s.GetSetting()
+	if err != nil {
+		return
+	}
+	filtered := make([]int, 0, len(v.PendingDeletes))
+	for _, p := range v.PendingDeletes {
+		if p != port {
+			filtered = append(filtered, p)
+		}
+	}
+	if len(filtered) != len(v.PendingDeletes) {
+		v.PendingDeletes = filtered
+		s.SaveSetting(v)
+	}
+}
+
+// GetPendingDeletes 返回需要手动处理的待删除端口列表。
+func (s *ServerManagementService) GetPendingDeletes() []int {
+	v, err := s.GetSetting()
+	if err != nil {
+		return nil
+	}
+	return v.PendingDeletes
 }
 
 func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {

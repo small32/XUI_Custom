@@ -166,6 +166,9 @@ func (a *InboundController) delInbound(c *gin.Context) {
 		if syncErr := a.serverService.DeleteSyncedInbound(inbound); syncErr != nil {
 			err = fmt.Errorf("本地账号已删除，但第三方同步删除失败: %w", syncErr)
 		}
+		// 端口可能被新账号复用：清掉旧端口的流量缓存并强制刷新一次心跳，
+		// 避免新账号继承旧账号的缓存用量被自动禁用。
+		a.serverService.ResetPortTrafficCache(inbound.Port)
 	}
 	jsonMsg(c, "删除", err)
 }

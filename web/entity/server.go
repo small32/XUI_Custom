@@ -10,6 +10,8 @@ type ServerSetting struct {
 	AutoDisable      bool   `json:"autoDisable" form:"autoDisable"`
 	SyncAccounts     bool   `json:"syncAccounts" form:"syncAccounts"`
 	HeartbeatMinutes int    `json:"heartbeatMinutes" form:"heartbeatMinutes"`
+	// PendingDeletes 存储同步删除失败的端口号，管理员需手动到远程服务器删除对应账号。
+	PendingDeletes []int `json:"pendingDeletes,omitempty" form:"pendingDeletes"`
 }
 
 type ServerTraffic struct {

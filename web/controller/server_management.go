@@ -35,6 +35,7 @@ func NewServerManagementController(g *gin.RouterGroup) *ServerManagementControll
 	g.POST("/traffic-summary/list", a.summary)
 	g.POST("/traffic-summary/snapshots", a.resetSnapshots)
 	g.POST("/server/inbound/:port", a.remoteInbound)
+	g.POST("/server/pending-deletes", a.getPendingDeletes)
 	cron := global.GetWebServer().GetCron()
 	// 每月 1 日 00:00:01 清零流量；再加一条每 5 分钟的兜底，服务重启或停机跨月后不会漏做。
 	if _, err := cron.AddFunc(monthlyResetCronSpec, a.monthlyReset); err != nil {
@@ -137,4 +138,9 @@ func (a *ServerManagementController) remoteInbound(c *gin.Context) {
 		return
 	}
 	jsonObj(c, v, nil)
+}
+
+// getPendingDeletes 返回需要同步删除的端口列表
+func (a *ServerManagementController) getPendingDeletes(c *gin.Context) {
+	jsonObj(c, a.service.GetPendingDeletes(), nil)
 }
