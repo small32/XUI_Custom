@@ -135,6 +135,13 @@ func TestDisableInvalidInboundsUsesAggregateUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	if count, err := ib.DisableInvalidInbounds(); err != nil || count != 0 {
+		t.Fatalf("switch off changed inbounds: %d %v", count, err)
+	}
+	if err := db.Create(&model.Setting{Key: serverManagementSettingKey, Value: `{"autoDisable":true}`}).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	count, err := ib.DisableInvalidInbounds()
 	if err != nil {
 		t.Fatal(err)
@@ -306,7 +313,7 @@ func TestRemoteMonthlyResetSQL(t *testing.T) {
 		t.Fatalf("启用语句必须排在清零之前:\n%s", sql)
 	}
 	for _, want := range []string{
-		"SET enable=1 WHERE enable=0 AND (expiry_time=0 OR expiry_time>" + strconv.FormatInt(now.Unix()*1000, 10) + ") AND port IN (9301,9306)",
+		"SET enable=1 WHERE EXISTS (SELECT 1 FROM reset_guard) AND enable=0 AND (expiry_time=0 OR expiry_time>" + strconv.FormatInt(now.Unix()*1000, 10) + ") AND port IN (9301,9306)",
 		"SET up=0, down=0 WHERE port IN (9001,9301,9306)",
 		"BEGIN IMMEDIATE",
 		"COMMIT",
@@ -324,7 +331,7 @@ func TestRemoteMonthlyResetSQL(t *testing.T) {
 	if strings.Contains(got, "SET enable=1") {
 		t.Errorf("非法端口不应生成启用语句:\n%s", got)
 	}
-	if !strings.Contains(got, "SET up=0, down=0 WHERE 0;\nSELECT changes();") {
+	if !strings.Contains(got, "SET up=0, down=0 WHERE 0 AND EXISTS (SELECT 1 FROM reset_guard);\nSELECT changes();") {
 		t.Errorf("按月名单为空时应退化成不匹配任何行:\n%s", got)
 	}
 	// 没有待启用端口时只清零。
@@ -333,7 +340,7 @@ func TestRemoteMonthlyResetSQL(t *testing.T) {
 		t.Errorf("无待启用端口时不应有启用语句:\n%s", empty)
 	}
 	// 调用方靠 SELECT changes() 校验清零行数，它必须紧跟清零语句。
-	if !strings.Contains(empty, "SET up=0, down=0 WHERE port IN (9001);\nSELECT changes();") {
+	if !strings.Contains(empty, "SET up=0, down=0 WHERE port IN (9001) AND EXISTS (SELECT 1 FROM reset_guard);\nSELECT changes();") {
 		t.Errorf("changes() 未紧跟清零语句:\n%s", empty)
 	}
 }

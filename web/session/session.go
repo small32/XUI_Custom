@@ -21,6 +21,10 @@ func init() {
 func SetLoginUser(c *gin.Context, user *model.User) error {
 	s := sessions.Default(c)
 	s.Set(loginUser, user)
+	// Switching to an administrator session must not retain a prior
+	// restricted-login binding or its password snapshot.
+	s.Delete(loginInboundId)
+	s.Delete(loginPassword)
 	return s.Save()
 }
 
@@ -30,7 +34,10 @@ func GetLoginUser(c *gin.Context) *model.User {
 	if obj == nil {
 		return nil
 	}
-	user := obj.(model.User)
+	user, ok := obj.(model.User)
+	if !ok {
+		return nil
+	}
 	return &user
 }
 

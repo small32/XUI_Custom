@@ -248,6 +248,12 @@ func expiredAt(in *model.Inbound, nowMs int64) bool {
 // 区别只在月初是否恢复——按月账号由月度清零重新计数后恢复启用，
 // 未按月的账号累计到底，停用后不会自动恢复（流量用完即止）。
 func (s *InboundService) DisableInvalidInbounds() (int64, error) {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
+	setting, err := new(ServerManagementService).GetSetting()
+	if err != nil {
+		return 0, err
+	}
 	db := database.GetDB()
 	now := time.Now().Unix() * 1000
 	remote, err := readTrafficCache(db)
@@ -265,7 +271,7 @@ func (s *InboundService) DisableInvalidInbounds() (int64, error) {
 	ids := make([]int, 0)
 	for i := range enabled {
 		in := &enabled[i]
-		if expiredAt(in, now) || TrafficOverlimit(in.Up+in.Down, remoteUsed[in.Port], in.Total) {
+		if expiredAt(in, now) || (setting.AutoDisable && TrafficOverlimit(in.Up+in.Down, remoteUsed[in.Port], in.Total)) {
 			ids = append(ids, in.Id)
 		}
 	}

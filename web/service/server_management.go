@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"golang.org/x/crypto/ssh"
+	"gorm.io/gorm"
+	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
@@ -39,7 +42,7 @@ func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, re
 		return fmt.Errorf("节点端口无效")
 	}
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
+	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return fmt.Errorf("SSH连接失败: %w", err)
 	}
@@ -53,8 +56,8 @@ func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, re
 	if remove {
 		sql = deleteSyncedInboundSQL(inbound.Port)
 	}
-	sess.Stdin = strings.NewReader(sql)
-	cmd := `test -f /etc/x-ui/x-ui.db || exit 1; changed=$(sqlite3 -bail /etc/x-ui/x-ui.db) || exit $?; if [ "$changed" = "1" ]; then systemctl restart x-ui; fi`
+	sess.Stdin = strings.NewReader(withSyncReloadIntent(sql))
+	cmd := `test -f /etc/x-ui/x-ui.db || exit 1; sqlite3 -bail /etc/x-ui/x-ui.db || exit $?; ` + syncReloadCommand
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
 	if err := sess.Run(cmd); err != nil {
@@ -64,6 +67,26 @@ func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, re
 		return fmt.Errorf("远程端口 %d 账号同步失败: %w", inbound.Port, err)
 	}
 	return nil
+}
+
+var serverStateMu sync.Mutex
+
+// Bound the entire SSH exchange, including handshake, session creation and output.
+func dialRemoteSSH(network, address string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	conn, err := net.DialTimeout(network, address, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if err = conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		conn.Close()
+		return nil, err
+	}
+	c, channels, requests, err := ssh.NewClientConn(conn, address, cfg)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return ssh.NewClient(c, channels, requests), nil
 }
 
 // A missing owner makes an inbound invisible to the remote panel. Preserve an
@@ -124,7 +147,7 @@ func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{
 		return nil, fmt.Errorf("未配置第三方服务器SSH密码")
 	}
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
+	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -279,6 +302,8 @@ func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
 	return &v, nil
 }
 func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
 	if v.SyncStrategy == "" {
 		v.SyncStrategy = "normal"
 	}
@@ -305,19 +330,48 @@ func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
 		v.Password = old.Password
 	}
 	b, _ := json.Marshal(v)
-	db := database.GetDB()
-	row := &model.Setting{}
-	err = db.Where("key = ?", serverManagementSettingKey).First(row).Error
-	if database.IsNotFound(err) {
-		return db.Create(&model.Setting{Key: serverManagementSettingKey, Value: string(b)}).Error
-	}
-	if err != nil {
-		return err
-	}
-	row.Value = string(b)
-	return db.Save(row).Error
+	return database.GetDB().Transaction(func(db *gorm.DB) error {
+		row := &model.Setting{}
+		err := db.Where("key = ?", serverManagementSettingKey).First(row).Error
+		if database.IsNotFound(err) {
+			if err = db.Create(&model.Setting{Key: serverManagementSettingKey, Value: string(b)}).Error; err != nil {
+				return err
+			}
+		} else if err != nil {
+			return err
+		} else {
+			row.Value = string(b)
+			if err = db.Save(row).Error; err != nil {
+				return err
+			}
+		}
+		if old.Host != v.Host || old.Port != v.Port || old.Username != v.Username {
+			if err := db.Where("key = ?", trafficCacheKey).Delete(&model.Setting{}).Error; err != nil {
+				return err
+			}
+			st, err := readTrafficResetState(db)
+			if err != nil {
+				return err
+			}
+			if st.LocalDone && !st.RemoteDone {
+				st.RemoteDone = true
+				if err := saveTrafficResetStateTx(db, st); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		return nil
+	})
 }
+
 func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
+	st, err := s.getTrafficResetState()
+	if err != nil {
+		return nil, err
+	}
 	v, err := s.GetSetting()
 	if err != nil {
 		return nil, err
@@ -326,11 +380,24 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 		return nil, fmt.Errorf("请先配置第三方服务器及SSH密码")
 	}
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
+	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("SSH连接失败: %w", err)
 	}
 	defer client.Close()
+	retry, err := client.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	err = retry.Run(syncReloadCommand)
+	retry.Close()
+	if err != nil {
+		return nil, fmt.Errorf("重试远程账号配置重启失败: %w", err)
+	}
+	if st.PendingMonth != 0 && st.LocalDone && !st.RemoteDone {
+		return nil, fmt.Errorf("月度远程清零尚未完成，等待重试")
+	}
+
 	sess, err := client.NewSession()
 	if err != nil {
 		return nil, err
@@ -377,9 +444,14 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 				remotePorts = append(remotePorts, strconv.Itoa(item.Port))
 			}
 		}
-		if len(remotePorts) > 0 {
+		// Run the remote command on every heartbeat so a pending restart is
+		// retried even after the database row already shows enable=0.
+		{
+			if len(remotePorts) == 0 {
+				remotePorts = append(remotePorts, "0")
+			}
 			// Check affected rows on the remote database, not only the earlier snapshot.
-			cmd := fmt.Sprintf(`changed=$(sqlite3 -bail /etc/x-ui/x-ui.db 'UPDATE inbounds SET enable=0 WHERE enable=1 AND port IN (%s); SELECT changes();') || exit $?; if [ "$changed" -gt 0 ]; then systemctl restart x-ui; fi`, strings.Join(remotePorts, ","))
+			cmd := remoteDisableCommand(strings.Join(remotePorts, ","))
 			r, e := client.NewSession()
 			if e != nil {
 				return nil, e
@@ -433,3 +505,23 @@ func (s *ServerManagementService) disableLocal(port int) (bool, error) {
 	result := database.GetDB().Model(&model.Inbound{}).Where("port = ? AND enable = ?", port, true).Update("enable", false)
 	return result.RowsAffected > 0, result.Error
 }
+
+func remoteDisableCommand(ports string) string {
+	return fmt.Sprintf(`sqlite3 -bail /etc/x-ui/x-ui.db ".timeout 5000" "BEGIN IMMEDIATE; UPDATE inbounds SET enable=0 WHERE enable=1 AND port IN (%s); INSERT INTO settings(key,value) SELECT 'remoteReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='remoteReloadPending'); COMMIT;" || exit $?
+pending=$(sqlite3 -batch -noheader /etc/x-ui/x-ui.db "SELECT count(*) FROM settings WHERE key='remoteReloadPending';") || exit $?
+if [ "$pending" -gt 0 ]; then
+ systemctl restart x-ui || exit $?
+ sqlite3 -bail /etc/x-ui/x-ui.db "DELETE FROM settings WHERE key='remoteReloadPending';" || exit $?
+fi`, ports)
+}
+
+// Persist restart intent in the same transaction as account changes.
+func withSyncReloadIntent(sql string) string {
+	return strings.Replace(sql, "COMMIT;", "INSERT INTO settings(key,value) SELECT 'syncReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='syncReloadPending');\nCOMMIT;", 1)
+}
+
+const syncReloadCommand = `pending=$(sqlite3 -batch -noheader /etc/x-ui/x-ui.db "SELECT count(*) FROM settings WHERE key='syncReloadPending';") || exit $?
+if [ "$pending" -gt 0 ]; then
+ systemctl restart x-ui || exit $?
+ sqlite3 -bail /etc/x-ui/x-ui.db "DELETE FROM settings WHERE key='syncReloadPending';" || exit $?
+fi`

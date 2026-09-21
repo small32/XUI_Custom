@@ -27,10 +27,11 @@ const (
 // PendingMonth 为正在处理的月份：远程清零失败时会停在这一步等待下一轮重试。
 // 月份用 yyyymm 编号（如 202609），与留档表的字段保持同一口径。
 type trafficResetState struct {
-	ConfirmedMonth int  `json:"confirmedMonth"`
-	PendingMonth   int  `json:"pendingMonth"`
-	LocalDone      bool `json:"localDone"`
-	RemoteDone     bool `json:"remoteDone"`
+	RemoteIdentity string `json:"remoteIdentity"`
+	ConfirmedMonth int    `json:"confirmedMonth"`
+	PendingMonth   int    `json:"pendingMonth"`
+	LocalDone      bool   `json:"localDone"`
+	RemoteDone     bool   `json:"remoteDone"`
 	// ReactivatePorts 是本次清零前“因超限被停用”的端口，供远程阶段恢复启用。
 	// 本地清零会把用量归零、超限状态随之消失，所以只能在这一步留存；
 	// 否则远程清零失败重试时，就再也推不出该启用哪些端口了。
@@ -62,6 +63,8 @@ func (s *ServerManagementService) MaybeMonthlyReset() error {
 }
 
 func (s *ServerManagementService) maybeMonthlyResetAt(now time.Time) error {
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
 	month := TrafficYyyymm(now)
 	st, err := s.getTrafficResetState()
 	if err != nil {
@@ -76,6 +79,16 @@ func (s *ServerManagementService) maybeMonthlyResetAt(now time.Time) error {
 		return nil
 	}
 	if st.PendingMonth != month {
+		// Local counters already belong to the pending month, even if remote
+		// completion failed. Archive them under that month, not the older one.
+		if st.LocalDone && st.PendingMonth > 0 {
+			st.ConfirmedMonth = st.PendingMonth
+		}
+		v, err := s.GetSetting()
+		if err != nil {
+			return err
+		}
+		st.RemoteIdentity = remoteIdentity(v)
 		st.PendingMonth = month
 		st.LocalDone = false
 		st.RemoteDone = false
@@ -92,7 +105,7 @@ func (s *ServerManagementService) maybeMonthlyResetAt(now time.Time) error {
 		if e != nil {
 			return e
 		}
-		if v.Host == "" || v.Password == "" {
+		if (st.RemoteIdentity != "" && st.RemoteIdentity != remoteIdentity(v)) || v.Host == "" || v.Password == "" {
 			// 未配置远程服务器时视为已完成，不影响本地清零的确认。
 			st.RemoteDone = true
 		} else if len(st.MonthlyPorts) == 0 && len(st.ReactivatePorts) == 0 {
@@ -157,8 +170,12 @@ func (s *ServerManagementService) TrafficResetSnapshots(inboundId int) ([]*entit
 }
 
 func (s *ServerManagementService) getTrafficResetState() (*trafficResetState, error) {
+	return readTrafficResetState(database.GetDB())
+}
+
+func readTrafficResetState(db *gorm.DB) (*trafficResetState, error) {
 	row := &model.Setting{}
-	err := database.GetDB().Where("key = ?", trafficResetStateKey).First(row).Error
+	err := db.Where("key = ?", trafficResetStateKey).First(row).Error
 	if database.IsNotFound(err) {
 		return &trafficResetState{}, nil
 	}
@@ -210,7 +227,8 @@ func saveTrafficResetStateTx(tx *gorm.DB, st *trafficResetState) error {
 // 已过期的即使超限也保持停用，避免月初把到期账号又放出来；
 // 非按月账号根本不会进这个名单，所以“用完即止”的停用不会被月初解除。
 func (s *ServerManagementService) snapshotAndResetLocal(st *trafficResetState, yyyymm int, now time.Time) error {
-	return database.GetDB().Transaction(func(tx *gorm.DB) error {
+	changed := false
+	err := database.GetDB().Transaction(func(tx *gorm.DB) error {
 		var locals []model.Inbound
 		if err := tx.Order("port").Find(&locals).Error; err != nil {
 			return err
@@ -262,16 +280,38 @@ func (s *ServerManagementService) snapshotAndResetLocal(st *trafficResetState, y
 		}
 		// 新月份从零开始计数，上个月因超限停用的按月账号随之恢复启用。
 		if len(reactivatePorts) > 0 {
-			if err = tx.Model(&model.Inbound{}).Where("port in ?", reactivatePorts).
-				Update("enable", true).Error; err != nil {
-				return err
+			result := tx.Model(&model.Inbound{}).Where("port in ? AND enable = ?", reactivatePorts, false).Update("enable", true)
+			if result.Error != nil {
+				return result.Error
 			}
+			changed = result.RowsAffected > 0
+		}
+		// Remove prior-month counters before restored accounts can be checked.
+		for _, r := range remote {
+			for _, port := range monthlyPorts {
+				if r.Port == port {
+					r.Up = 0
+					r.Down = 0
+					r.Used = 0
+				}
+			}
+		}
+		cache, err := json.Marshal(remote)
+		if err != nil {
+			return err
+		}
+		if err = tx.Model(&model.Setting{}).Where("key = ?", trafficCacheKey).Update("value", string(cache)).Error; err != nil {
+			return err
 		}
 		st.LocalDone = true
 		st.ReactivatePorts = reactivatePorts
 		st.MonthlyPorts = monthlyPorts
 		return saveTrafficResetStateTx(tx, st)
 	})
+	if err == nil && changed {
+		new(XrayService).SetToNeedRestart()
+	}
+	return err
 }
 
 // saveTrafficSnapshot 写入一条月度留档。同账号同月重复写入会覆盖原行，
@@ -320,10 +360,10 @@ func readAllTrafficSnapshots(tx *gorm.DB, inboundId int) ([]*model.TrafficSnapsh
 }
 
 // resetRemoteTraffic 通过 SSH 清零第三方面板里指定端口的已用流量，并恢复月初应启用的端口。
-// 只写 up/down 不碰 total；xray 的统计按增量累加，因此无需重启远程面板。
+// 仅清零流量不需重启；恢复启用后需要重新加载远程运行配置。
 func (s *ServerManagementService) resetRemoteTraffic(v *entity.ServerSetting, monthlyPorts, reactivatePorts []int, now time.Time) error {
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
+	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return fmt.Errorf("SSH连接失败: %w", err)
 	}
@@ -336,7 +376,7 @@ func (s *ServerManagementService) resetRemoteTraffic(v *entity.ServerSetting, mo
 	sess.Stdin = strings.NewReader(remoteMonthlyResetSQL(monthlyPorts, reactivatePorts, now))
 	var stderr bytes.Buffer
 	sess.Stderr = &stderr
-	out, err := sess.Output("test -f /etc/x-ui/x-ui.db && sqlite3 -batch -bail -noheader /etc/x-ui/x-ui.db")
+	out, err := sess.Output(remoteMonthlyResetCommand)
 	if err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("清零远程流量失败: %s: %w", msg, err)
@@ -361,18 +401,31 @@ func (s *ServerManagementService) resetRemoteTraffic(v *entity.ServerSetting, mo
 func remoteMonthlyResetSQL(monthlyPorts, reactivatePorts []int, now time.Time) string {
 	var b strings.Builder
 	b.WriteString(".timeout 5000\nBEGIN IMMEDIATE;\n")
+	b.WriteString(fmt.Sprintf("CREATE TEMP TABLE reset_guard AS SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key='remoteMonthlyResetApplied' AND value='%d');\n", TrafficYyyymm(now)))
 	if ports := validPortList(reactivatePorts); len(ports) > 0 {
 		b.WriteString(fmt.Sprintf(
-			"UPDATE inbounds SET enable=1 WHERE enable=0 AND (expiry_time=0 OR expiry_time>%d) AND port IN (%s);\n",
+			"UPDATE inbounds SET enable=1 WHERE EXISTS (SELECT 1 FROM reset_guard) AND enable=0 AND (expiry_time=0 OR expiry_time>%d) AND port IN (%s);\n",
 			now.Unix()*1000, strings.Join(ports, ",")))
+		// Persist reload intent together with the enable change, so a failed
+		// restart is retried even when the next UPDATE changes no rows.
+		b.WriteString("INSERT INTO settings (key,value) SELECT 'monthlyResetReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='monthlyResetReloadPending');\n")
 	}
 	clearCond := "0"
 	if ports := validPortList(monthlyPorts); len(ports) > 0 {
 		clearCond = "port IN (" + strings.Join(ports, ",") + ")"
 	}
-	b.WriteString("UPDATE inbounds SET up=0, down=0 WHERE " + clearCond + ";\nSELECT changes();\nCOMMIT;\n")
+	b.WriteString("UPDATE inbounds SET up=0, down=0 WHERE " + clearCond + " AND EXISTS (SELECT 1 FROM reset_guard);\nSELECT changes();\n")
+	b.WriteString(fmt.Sprintf("DELETE FROM settings WHERE key='remoteMonthlyResetApplied'; INSERT INTO settings(key,value) VALUES('remoteMonthlyResetApplied','%d'); COMMIT;\n", TrafficYyyymm(now)))
 	return b.String()
 }
+
+const remoteMonthlyResetCommand = `test -f /etc/x-ui/x-ui.db || exit 1
+sqlite3 -batch -bail -noheader /etc/x-ui/x-ui.db || exit $?
+pending=$(sqlite3 -batch -noheader /etc/x-ui/x-ui.db "SELECT count(*) FROM settings WHERE key='monthlyResetReloadPending';") || exit $?
+if [ "$pending" -gt 0 ]; then
+  systemctl restart x-ui >&2 || exit $?
+  sqlite3 -bail /etc/x-ui/x-ui.db "DELETE FROM settings WHERE key='monthlyResetReloadPending';" || exit $?
+fi`
 
 // validPortList 过滤出合法端口并转成字符串，非法值直接丢弃：
 // 这些数字会被拼进 SQL，不能放任何来路不明的内容进去。
@@ -400,4 +453,9 @@ func readTrafficCache(tx *gorm.DB) ([]*entity.ServerTraffic, error) {
 		return nil, fmt.Errorf("解析流量缓存失败: %w", err)
 	}
 	return v, nil
+}
+
+func remoteIdentity(v *entity.ServerSetting) string {
+	b, _ := json.Marshal([]interface{}{v.Host, v.Port, v.Username})
+	return string(b)
 }

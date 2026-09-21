@@ -101,7 +101,12 @@ func (a *InboundController) restrictedSubscription(c *gin.Context) {
 		serverName = allSetting.ServerName
 	}
 	var remoteInbound interface{}
-	if v, e := a.serverService.RemoteInbound(inbound.Port); e == nil && v != nil {
+	v, e := a.serverService.RemoteInbound(inbound.Port)
+	if e != nil {
+		jsonMsg(c, "获取订阅", e)
+		return
+	}
+	if v != nil {
 		protocol, _ := v["protocol"].(string)
 		settings, _ := v["settings"].(string)
 		masked, err := service.WithLoginPassword(model.Protocol(protocol), settings, password)
