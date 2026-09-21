@@ -7,6 +7,20 @@ plain='\033[0m'
 
 cur_dir=$(pwd)
 
+# ==================== 发布渠道（写死，不混用） ====================
+# 本文件在本渠道写死本渠道地址：运行期不推断渠道、不回退其他渠道、不读渠道状态文件。
+# 另一渠道的同一文件内容不同；改动本块后必须同步另一渠道的同一文件。
+XUI_API_URL="https://api.github.com/repos/small32/XUI_Custom/releases/latest"
+XUI_RELEASE_URL="https://github.com/small32/XUI_Custom/releases/download"
+XUI_RAW_URL="https://raw.githubusercontent.com/small32/XUI_Custom/main"
+XUI_RELEASES_PAGE="https://github.com/small32/XUI_Custom/releases"
+
+# 从 releases/latest 的 JSON 中取出 tag_name
+parse_tag_name() {
+    grep -Eo '"tag_name": *"[^"]+"' | head -1 | sed 's/.*: *"//; s/"$//'
+}
+# ======================================================
+
 # check root
 [[ $EUID -ne 0 ]] && echo -e "${red}错误：${plain} 必须使用root用户运行此脚本！\n" && exit 1
 
@@ -104,26 +118,22 @@ install_x-ui() {
     cd /usr/local/
 
     if [ $# == 0 ]; then
-        last_version=$(curl -Ls "http://small32.top:8418/api/v1/repos/winc0/XUI_Custom/releases/latest" | grep -Eo '"tag_name": *"[^"]+"' | head -1 | sed 's/.*: *"//; s/"$//')
+        last_version=$(curl -fsSL --connect-timeout 6 --max-time 20 "$XUI_API_URL" 2>/dev/null | parse_tag_name)
         if [[ ! -n "$last_version" ]]; then
-            echo -e "${red}未找到 XUI_Custom 正式发行版本，或 Gitea API 请求失败。请查看 http://small32.top:8418/winc0/XUI_Custom/releases；尚未发布时请按 README 从源码构建。${plain}"
+            echo -e "${red}未找到 XUI_Custom 正式发行版本，或发行接口请求失败。请查看发行页 ${XUI_RELEASES_PAGE}；尚未发布时请按 README 从源码构建。${plain}"
             exit 1
         fi
         echo -e "检测到 x-ui 最新版本：${last_version}，开始安装"
-        wget -N --no-check-certificate -O /usr/local/x-ui-linux-${arch}.tar.gz http://small32.top:8418/winc0/XUI_Custom/releases/download/${last_version}/x-ui-linux-${arch}.tar.gz
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 x-ui 失败，请确保你的服务器能够访问 Gitea（http://small32.top:8418）${plain}"
-            exit 1
-        fi
     else
         last_version=$1
-        url="http://small32.top:8418/winc0/XUI_Custom/releases/download/${last_version}/x-ui-linux-${arch}.tar.gz"
         echo -e "开始安装 x-ui v$1"
-        wget -N --no-check-certificate -O /usr/local/x-ui-linux-${arch}.tar.gz ${url}
-        if [[ $? -ne 0 ]]; then
-            echo -e "${red}下载 x-ui v$1 失败，请确保此版本存在${plain}"
-            exit 1
-        fi
+    fi
+
+    pkg_url="${XUI_RELEASE_URL}/${last_version}/x-ui-linux-${arch}.tar.gz"
+    wget -N --no-check-certificate -O /usr/local/x-ui-linux-${arch}.tar.gz "${pkg_url}"
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}下载 x-ui v${last_version} 失败。请确认该版本存在，且本机可访问发行页 ${XUI_RELEASES_PAGE}${plain}"
+        exit 1
     fi
 
     systemctl stop x-ui
@@ -136,7 +146,7 @@ install_x-ui() {
     cd x-ui
     chmod +x x-ui bin/xray-linux-${arch}
     cp -f x-ui.service /etc/systemd/system/
-    wget --no-check-certificate -O /usr/bin/x-ui http://small32.top:8418/winc0/XUI_Custom/raw/branch/main/x-ui.sh
+    wget --no-check-certificate -O /usr/bin/x-ui ${XUI_RAW_URL}/x-ui.sh
     chmod +x /usr/local/x-ui/x-ui.sh
     chmod +x /usr/bin/x-ui
     config_after_install
@@ -149,7 +159,9 @@ install_x-ui() {
     systemctl daemon-reload
     systemctl enable x-ui
     systemctl start x-ui
+
     echo -e "${green}x-ui v${last_version}${plain} 安装完成，面板已启动，"
+    echo -e "发行页：${green}${XUI_RELEASES_PAGE}${plain}，后续升级从同一发行页获取。"
     echo -e ""
     echo -e "x-ui 管理脚本使用方法: "
     echo -e "----------------------------------------------"

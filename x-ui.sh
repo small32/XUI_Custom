@@ -17,6 +17,12 @@ function LOGE() {
 function LOGI() {
     echo -e "${green}[INF] $* ${plain}"
 }
+
+# ==================== 发布渠道（写死，不混用） ====================
+# 本文件在本渠道写死本渠道地址：运行期不推断渠道、不回退其他渠道、不读渠道状态文件。
+# 另一渠道的同一文件内容不同；改动本块后必须同步另一渠道的同一文件。
+XUI_RAW_URL="https://raw.githubusercontent.com/small32/XUI_Custom/main"
+# ======================================================
 # check root
 [[ $EUID -ne 0 ]] && LOGE "错误:  必须使用root用户运行此脚本!\n" && exit 1
 
@@ -94,7 +100,7 @@ before_show_menu() {
 }
 
 install() {
-    bash <(curl -Ls https://raw.githubusercontent.com/small32/XUI_Custom/main/install.sh)
+    bash <(curl -Ls "${XUI_RAW_URL}/install.sh")
     if [[ $? == 0 ]]; then
         if [[ $# == 0 ]]; then
             start
@@ -113,7 +119,7 @@ update() {
         fi
         return 0
     fi
-    bash <(curl -Ls https://raw.githubusercontent.com/small32/XUI_Custom/main/install.sh)
+    bash <(curl -Ls "${XUI_RAW_URL}/install.sh")
     if [[ $? == 0 ]]; then
         LOGI "更新完成，已自动重启面板 "
         exit 0
@@ -302,10 +308,10 @@ install_bbr() {
 }
 
 update_shell() {
-    wget -O /usr/bin/x-ui -N --no-check-certificate https://github.com/small32/XUI_Custom/raw/main/x-ui.sh
+    wget -O /usr/bin/x-ui -N --no-check-certificate "${XUI_RAW_URL}/x-ui.sh"
     if [[ $? != 0 ]]; then
         echo ""
-        LOGE "下载脚本失败，请检查本机能否连接 Github"
+        LOGE "下载脚本失败，请检查本机能否连接 GitHub"
         before_show_menu
     else
         chmod +x /usr/bin/x-ui
