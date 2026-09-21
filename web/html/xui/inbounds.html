@@ -47,8 +47,13 @@
                             <a-button v-if="!restricted" type="primary" icon="plus" @click="openAddInbound"></a-button>
                         </div>
 <!--                        <a-input v-model="searchKey" placeholder="搜索" autofocus style="max-width: 300px"></a-input>-->
+                        <a-checkbox-group v-if="!restricted" v-model="filters" style="margin-top: 16px">
+                            <a-checkbox value="enabled">已启用</a-checkbox>
+                            <a-checkbox value="disabled">已停用</a-checkbox>
+                            <a-checkbox value="overlimit">已超限</a-checkbox>
+                        </a-checkbox-group>
                         <a-table :columns="columns" :row-key="dbInbound => dbInbound.id"
-                                 :data-source="dbInbounds"
+                                 :data-source="visibleInbounds"
                                  :loading="spinning" :scroll="{ x: 1500 }"
                                  :pagination="false"
                                  style="margin-top: 20px"
@@ -206,6 +211,10 @@
             inbounds: [],
             dbInbounds: [],
             searchKey: '',
+            // 三态筛选项，空数组表示不筛选、显示全部。仅管理员可见。
+            filters: [],
+            // inboundId → enabled／disabled／overlimit，取自流量汇总接口。
+            statusByInboundId: {},
             clashSubscriptionVisible: false,
             clashSubscriptionUrl: '',
             subscriptionTarget: 'clash',
@@ -218,11 +227,30 @@
             async getDBInbounds() {
                 this.loading();
                 const msg = await HttpUtil.post('/xui/inbound/list');
+                if (!restricted) {
+                    // 入站列表只有本地用量，而“已超限”按本地 + 远程的汇总口径判定，
+                    // 因此管理员这里多取一次流量汇总，按 inboundId 建立状态索引，
+                    // 让列表页与汇总页筛出来的结果完全一致。
+                    const sum = await HttpUtil.post('/xui/traffic-summary/list');
+                    if (sum.success) {
+                        const byId = {};
+                        for (const row of (sum.obj || [])) {
+                            byId[row.inboundId] = row.status;
+                        }
+                        this.statusByInboundId = byId;
+                    } else {
+                        this.$message.error(sum.msg || '读取流量汇总失败，超限状态可能不准确');
+                    }
+                }
                 this.loading(false);
                 if (!msg.success) {
                     return;
                 }
                 this.setInbounds(msg.obj);
+            },
+            statusOf(inbound) {
+                // 汇总数据缺失时退回本地启用状态，宁可漏判超限，也不把整条账号藏起来。
+                return this.statusByInboundId[inbound.id] || (inbound.enable ? 'enabled' : 'disabled');
             },
             setInbounds(dbInbounds) {
                 this.inbounds.splice(0);
@@ -297,6 +325,7 @@
                     remark: dbInbound.remark,
                     enable: dbInbound.enable,
                     expiryTime: dbInbound.expiryTime,
+                    monthlyReset: dbInbound.monthlyReset,
 
                     listen: inbound.listen,
                     port: inbound.port,
@@ -315,6 +344,7 @@
                     remark: dbInbound.remark,
                     enable: dbInbound.enable,
                     expiryTime: dbInbound.expiryTime,
+                    monthlyReset: dbInbound.monthlyReset,
 
                     listen: inbound.listen,
                     port: inbound.port,
@@ -447,6 +477,10 @@
                     down: down,
                     up: up,
                 };
+            },
+            visibleInbounds() {
+                if (restricted || !this.filters.length) return this.dbInbounds;
+                return this.dbInbounds.filter(inbound => this.filters.indexOf(this.statusOf(inbound)) >= 0);
             }
         },
     });

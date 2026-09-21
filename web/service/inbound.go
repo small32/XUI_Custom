@@ -192,6 +192,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	oldInbound.Remark = inbound.Remark
 	oldInbound.Enable = inbound.Enable
 	oldInbound.ExpiryTime = inbound.ExpiryTime
+	oldInbound.MonthlyReset = inbound.MonthlyReset
 	oldInbound.Listen = inbound.Listen
 	oldInbound.Port = inbound.Port
 	oldInbound.Protocol = inbound.Protocol
@@ -232,13 +233,45 @@ func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
 	return
 }
 
+// expiredAt 判断入站是否已过到期时间（毫秒时间戳，0 表示无限期）。
+func expiredAt(in *model.Inbound, nowMs int64) bool {
+	return in.ExpiryTime > 0 && in.ExpiryTime <= nowMs
+}
+
+// DisableInvalidInbounds 停用已超限或已过期的入站，返回被停用的条数。
+//
+// 超限按汇总用量判断：本地 up+down 加上第三方服务器同端口的用量，
+// 与流量汇总页、三态筛选走同一套口径（TrafficOverlimit）。
+// 未配置第三方服务器时缓存为空，等价于只看本地用量，与改造前一致。
+//
+// 这里不区分“按月计算”与否：两种计费都是用量达到 total 即停用，
+// 区别只在月初是否恢复——按月账号由月度清零重新计数后恢复启用，
+// 未按月的账号累计到底，停用后不会自动恢复（流量用完即止）。
 func (s *InboundService) DisableInvalidInbounds() (int64, error) {
 	db := database.GetDB()
 	now := time.Now().Unix() * 1000
-	result := db.Model(model.Inbound{}).
-		Where("((total > 0 and up + down >= total) or (expiry_time > 0 and expiry_time <= ?)) and enable = ?", now, true).
-		Update("enable", false)
-	err := result.Error
-	count := result.RowsAffected
-	return count, err
+	remote, err := readTrafficCache(db)
+	if err != nil {
+		return 0, err
+	}
+	remoteUsed := make(map[int]int64, len(remote))
+	for _, r := range remote {
+		remoteUsed[r.Port] = r.Used
+	}
+	var enabled []model.Inbound
+	if err = db.Where("enable = ?", true).Find(&enabled).Error; err != nil {
+		return 0, err
+	}
+	ids := make([]int, 0)
+	for i := range enabled {
+		in := &enabled[i]
+		if expiredAt(in, now) || TrafficOverlimit(in.Up+in.Down, remoteUsed[in.Port], in.Total) {
+			ids = append(ids, in.Id)
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	result := db.Model(model.Inbound{}).Where("id in ?", ids).Update("enable", false)
+	return result.RowsAffected, result.Error
 }

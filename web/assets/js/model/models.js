@@ -36,6 +36,8 @@ class DBInbound {
         this.remark = "";
         this.enable = true;
         this.expiryTime = 0;
+        // 按月计算：勾选后每月 1 日清零重新计流量；不勾选则累计使用、流量用完即止。
+        this.monthlyReset = false;
 
         this.remoteAddress = "";
         this.listen = "";

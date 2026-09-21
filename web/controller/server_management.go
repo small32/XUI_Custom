@@ -12,6 +12,13 @@ import (
 	"x-ui/web/session"
 )
 
+// 流量月度清零的定时表达式。cron 已启用秒级解析，字段顺序为 秒 分 时 日 月 周，
+// 因此 "1 0 0 1 * *" 即每月 1 日 00:00:01；兜底任务按间隔轮询，避免停机跨月漏做。
+const (
+	monthlyResetCronSpec     = "1 0 0 1 * *"
+	monthlyResetFallbackSpec = "@every 5m"
+)
+
 type ServerManagementController struct {
 	service       service.ServerManagementService
 	lastHeartbeat time.Time
@@ -26,7 +33,16 @@ func NewServerManagementController(g *gin.RouterGroup) *ServerManagementControll
 	g.POST("/server/traffic", a.traffic)
 	g.GET("/traffic-summary", a.summaryPage)
 	g.POST("/traffic-summary/list", a.summary)
+	g.POST("/traffic-summary/snapshots", a.resetSnapshots)
 	g.POST("/server/inbound/:port", a.remoteInbound)
+	cron := global.GetWebServer().GetCron()
+	// 每月 1 日 00:00:01 清零流量；再加一条每 5 分钟的兜底，服务重启或停机跨月后不会漏做。
+	if _, err := cron.AddFunc(monthlyResetCronSpec, a.monthlyReset); err != nil {
+		logger.Warning("注册流量月度清零任务失败: ", err)
+	}
+	if _, err := cron.AddFunc(monthlyResetFallbackSpec, a.monthlyReset); err != nil {
+		logger.Warning("注册流量月度清零兜底任务失败: ", err)
+	}
 	global.GetWebServer().GetCron().AddFunc("@every 1m", func() {
 		if v, err := a.service.GetSetting(); err == nil && v.Host != "" {
 			a.heartbeatMu.Lock()
@@ -86,6 +102,28 @@ func (a *ServerManagementController) summary(c *gin.Context) {
 		return
 	}
 	jsonObj(c, v, nil)
+}
+
+// monthlyReset 由定时任务触发，跨月后清零流量并留档。失败只记日志，下一轮自动重试。
+func (a *ServerManagementController) monthlyReset() {
+	if err := a.service.MaybeMonthlyReset(); err != nil {
+		logger.Warning("流量月度清零失败: ", err)
+	}
+}
+
+// resetSnapshots 返回指定账号的月度流量留档（按 yyyymm 从最近往最前排序）。
+// 请求体里的 inboundId 决定看哪个账号；受限登录一律以会话绑定的入站为准，
+// 传别的 id 也会被覆盖，防止越权查看他人记录。
+func (a *ServerManagementController) resetSnapshots(c *gin.Context) {
+	var form struct {
+		InboundId int `form:"inboundId"`
+	}
+	_ = c.ShouldBind(&form)
+	if bound := session.GetLoginInboundId(c); bound > 0 {
+		form.InboundId = bound
+	}
+	v, err := a.service.TrafficResetSnapshots(form.InboundId)
+	jsonObj(c, v, err)
 }
 func (a *ServerManagementController) remoteInbound(c *gin.Context) {
 	port, err := strconv.Atoi(c.Param("port"))

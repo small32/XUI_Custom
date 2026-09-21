@@ -32,12 +32,24 @@
             总流量(GB)
             <a-tooltip>
                 <template slot="title">
-                    0 表示不限制
+                    0 表示不限制流量
                 </template>
                 <a-icon type="question-circle" theme="filled"></a-icon>
             </a-tooltip>
         </span>
         <a-input-number v-model="dbInbound.totalGB" :min="0"></a-input-number>
+    </a-form-item>
+    <a-form-item>
+        <span slot="label">
+            计费方式
+            <a-tooltip>
+                <template slot="title">
+                    勾选“按月计算”后，每月 1 日 00:00:01 自动清零并重新累计，流量上限按月滚动；不勾选则流量累计使用、用完即止，不做月度清零。总流量为 0 时两种方式都不限流量
+                </template>
+                <a-icon type="question-circle" theme="filled"></a-icon>
+            </a-tooltip>
+        </span>
+        <a-checkbox v-model="dbInbound.monthlyReset">按月计算</a-checkbox>
     </a-form-item>
     <a-form-item>
         <span slot="label">

@@ -202,7 +202,25 @@ func (s *ServerManagementService) Summary(inboundId int) ([]*entity.TrafficSumma
 			re = r.Enable
 		}
 		lu := in.Up + in.Down
-		out = append(out, &entity.TrafficSummary{Username: in.Remark, Port: in.Port, Local: lu, Remote: ru, Total: lu + ru, Limit: in.Total, Enable: in.Enable && re})
+		enable := in.Enable && re
+		overlimit := TrafficOverlimit(lu, ru, in.Total)
+		out = append(out, &entity.TrafficSummary{
+			InboundId:    in.Id,
+			Username:     in.Remark,
+			Port:         in.Port,
+			Local:        lu,
+			Remote:       ru,
+			Total:        lu + ru,
+			Limit:        in.Total,
+			Enable:       enable,
+			MonthlyReset: in.MonthlyReset,
+			Overlimit:    overlimit,
+			Status:       TrafficStatusOf(enable, overlimit),
+			LocalText:    FormatTrafficSize(lu),
+			RemoteText:   FormatTrafficSize(ru),
+			TotalText:    FormatTrafficSize(lu + ru),
+			LimitText:    FormatTrafficLimit(in.Total),
+		})
 	}
 	return out, nil
 }
