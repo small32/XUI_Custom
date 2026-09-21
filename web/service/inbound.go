@@ -186,8 +186,8 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	if err != nil {
 		return err
 	}
-	oldInbound.Up = inbound.Up
-	oldInbound.Down = inbound.Down
+	// 不覆盖 Up/Down：用户可能只改了备注，期间 xray 已累加了新流量。
+	// 流量由 AddTraffic 独立累加，编辑操作应保持已有用量不变。
 	oldInbound.Total = inbound.Total
 	oldInbound.Remark = inbound.Remark
 	oldInbound.Enable = inbound.Enable
