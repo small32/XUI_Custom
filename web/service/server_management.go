@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"golang.org/x/crypto/ssh"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -313,25 +312,13 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 		return nil, err
 	}
 	defer sess.Close()
-	out, err := sess.Output("sqlite3 -separator '\\t' /etc/x-ui/x-ui.db 'SELECT port, up, down, total, enable FROM inbounds ORDER BY port;'")
+	out, err := sess.Output("sqlite3 -batch -noheader -separator '|' /etc/x-ui/x-ui.db '" + remoteTrafficSQL + "'")
 	if err != nil {
 		return nil, fmt.Errorf("读取远程流量失败: %w", err)
 	}
-	result := make([]*entity.ServerTraffic, 0)
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.Split(line, "\t")
-		if len(f) != 5 {
-			continue
-		}
-		port, e1 := strconv.Atoi(f[0])
-		up, e2 := strconv.ParseInt(f[1], 10, 64)
-		down, e3 := strconv.ParseInt(f[2], 10, 64)
-		total, e4 := strconv.ParseInt(f[3], 10, 64)
-		en, e5 := strconv.Atoi(f[4])
-		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil {
-			continue
-		}
-		result = append(result, &entity.ServerTraffic{Port: port, Up: up, Down: down, Used: up + down, Total: total, Enable: en == 1})
+	result, err := parseRemoteTraffic(out)
+	if err != nil {
+		return nil, err
 	}
 	if v.AutoDisable {
 		var localInbounds []model.Inbound
@@ -342,16 +329,33 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 		for _, in := range localInbounds {
 			localByPort[in.Port] = in
 		}
-		changed := false
+		localChanged := false
+		// Apply successful local changes even if a later remote operation fails.
+		defer func() {
+			if localChanged {
+				new(XrayService).SetToNeedRestart()
+			}
+		}()
+		remotePorts := make([]string, 0)
 		for _, item := range result {
 			local, exists := localByPort[item.Port]
 			if !exists || local.Total <= 0 || local.Up+local.Down+item.Used < local.Total {
 				continue
 			}
-			if err := s.disableLocal(item.Port); err != nil {
-				return nil, fmt.Errorf("禁用本地端口 %d 失败: %w", item.Port, err)
+			if local.Enable {
+				changed, err := s.disableLocal(item.Port)
+				if err != nil {
+					return nil, fmt.Errorf("禁用本地端口 %d 失败: %w", item.Port, err)
+				}
+				localChanged = localChanged || changed
 			}
-			cmd := fmt.Sprintf("sqlite3 /etc/x-ui/x-ui.db 'UPDATE inbounds SET enable = 0 WHERE port = %d;' && x-ui restart", item.Port)
+			if item.Enable {
+				remotePorts = append(remotePorts, strconv.Itoa(item.Port))
+			}
+		}
+		if len(remotePorts) > 0 {
+			// Check affected rows on the remote database, not only the earlier snapshot.
+			cmd := fmt.Sprintf(`changed=$(sqlite3 -bail /etc/x-ui/x-ui.db 'UPDATE inbounds SET enable=0 WHERE enable=1 AND port IN (%s); SELECT changes();') || exit $?; if [ "$changed" -gt 0 ]; then systemctl restart x-ui; fi`, strings.Join(remotePorts, ","))
 			r, e := client.NewSession()
 			if e != nil {
 				return nil, e
@@ -359,20 +363,49 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 			e = r.Run(cmd)
 			r.Close()
 			if e != nil {
-				return nil, fmt.Errorf("禁用远程端口 %d 失败: %w", item.Port, e)
+				return nil, fmt.Errorf("批量禁用远程端口失败: %w", e)
 			}
-			item.Enable = false
-			changed = true
-		}
-		if changed {
-			if err := exec.Command("x-ui", "restart").Run(); err != nil {
-				return nil, fmt.Errorf("重启本地面板失败: %w", err)
+			for _, item := range result {
+				local, exists := localByPort[item.Port]
+				if exists && local.Total > 0 && local.Up+local.Down+item.Used >= local.Total {
+					item.Enable = false
+				}
 			}
 		}
+	}
+	if err := s.SaveTrafficCache(result); err != nil {
+		return nil, fmt.Errorf("保存流量缓存失败: %w", err)
 	}
 	return result, nil
 }
 
-func (s *ServerManagementService) disableLocal(port int) error {
-	return database.GetDB().Model(&model.Inbound{}).Where("port = ? AND enable = ?", port, true).Update("enable", false).Error
+const remoteTrafficSQL = "SELECT port, COALESCE(up,0), COALESCE(down,0), COALESCE(total,0), COALESCE(enable,0) FROM inbounds ORDER BY port;"
+
+func parseRemoteTraffic(out []byte) ([]*entity.ServerTraffic, error) {
+	result := make([]*entity.ServerTraffic, 0)
+	content := strings.TrimSpace(string(out))
+	if content == "" {
+		return result, nil
+	}
+	for i, line := range strings.Split(content, "\n") {
+		f := strings.Split(strings.TrimSpace(line), "|")
+		if len(f) != 5 {
+			return nil, fmt.Errorf("远程流量第 %d 行格式错误：应有 5 个字段", i+1)
+		}
+		port, e1 := strconv.Atoi(f[0])
+		up, e2 := strconv.ParseInt(f[1], 10, 64)
+		down, e3 := strconv.ParseInt(f[2], 10, 64)
+		total, e4 := strconv.ParseInt(f[3], 10, 64)
+		en, e5 := strconv.Atoi(f[4])
+		if e1 != nil || e2 != nil || e3 != nil || e4 != nil || e5 != nil || port < 1 || port > 65535 || up < 0 || down < 0 || total < 0 || (en != 0 && en != 1) || up > int64(1<<63-1)-down {
+			return nil, fmt.Errorf("远程流量第 %d 行数值无效", i+1)
+		}
+		result = append(result, &entity.ServerTraffic{Port: port, Up: up, Down: down, Used: up + down, Total: total, Enable: en == 1})
+	}
+	return result, nil
+}
+
+func (s *ServerManagementService) disableLocal(port int) (bool, error) {
+	result := database.GetDB().Model(&model.Inbound{}).Where("port = ? AND enable = ?", port, true).Update("enable", false)
+	return result.RowsAffected > 0, result.Error
 }

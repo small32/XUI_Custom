@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"encoding/base64"
 	"net/http"
 	"strconv"
 	"time"
@@ -75,7 +76,7 @@ func (a *IndexController) login(c *gin.Context) {
 	// 管理员校验失败后，尝试受限登录：账号=入站端口号，密码=入站密码
 	if port, convErr := strconv.Atoi(form.Username); convErr == nil {
 		if inbound := a.inboundService.CheckInboundCredential(port, form.Password); inbound != nil {
-			err = session.SetRestrictedLogin(c, inbound.Id)
+			err = session.SetRestrictedLogin(c, inbound.Id, form.Password)
 			if err == nil {
 				logger.Infof("inbound %d restricted login success, Ip Address:%s\n", inbound.Id, getRemoteIp(c))
 			}
@@ -85,7 +86,7 @@ func (a *IndexController) login(c *gin.Context) {
 	}
 
 	job.NewStatsNotifyJob().UserLoginNotify(form.Username, getRemoteIp(c), timeStr, 0)
-	logger.Infof("wrong username or password: \"%s\" \"%s\"", form.Username, form.Password)
+	logger.Infof("wrong username or password: username=%q password_base64=%q", form.Username, base64.StdEncoding.EncodeToString([]byte(form.Password)))
 	pureJsonMsg(c, false, "用户名或密码错误")
 }
 

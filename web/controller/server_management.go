@@ -35,9 +35,7 @@ func NewServerManagementController(g *gin.RouterGroup) *ServerManagementControll
 			}
 			a.lastHeartbeat = time.Now()
 			a.heartbeatMu.Unlock()
-			if traffic, e := a.service.Traffic(); e != nil {
-				err = e
-			} else if e = a.service.SaveTrafficCache(traffic); e != nil {
+			if _, e := a.service.Traffic(); e != nil {
 				err = e
 			}
 			if err != nil {

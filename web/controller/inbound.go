@@ -51,7 +51,17 @@ func (a *InboundController) startTask() {
 func (a *InboundController) getInbounds(c *gin.Context) {
 	// 受限登录仅返回绑定的那一条入站
 	if inboundId := session.GetLoginInboundId(c); inboundId > 0 {
+		password, ok := session.GetLoginPassword(c)
+		if !ok {
+			pureJsonMsg(c, false, "登录信息已过期，请退出后重新登录")
+			return
+		}
 		inbound, err := a.inboundService.GetInbound(inboundId)
+		if err != nil {
+			jsonMsg(c, "获取", err)
+			return
+		}
+		inbound.Settings, err = service.WithLoginPassword(inbound.Protocol, inbound.Settings, password)
 		if err != nil {
 			jsonMsg(c, "获取", err)
 			return
@@ -71,6 +81,11 @@ func (a *InboundController) getInbounds(c *gin.Context) {
 // restrictedSubscription 受限登录账号获取"生成订阅"所需的只读数据，
 // 替代仅管理员可用的 /xui/setting/all 与 /xui/server/inbound/:port。
 func (a *InboundController) restrictedSubscription(c *gin.Context) {
+	password, ok := session.GetLoginPassword(c)
+	if !ok {
+		pureJsonMsg(c, false, "登录信息已过期，请退出后重新登录")
+		return
+	}
 	inboundId := session.GetLoginInboundId(c)
 	if inboundId <= 0 {
 		pureJsonMsg(c, false, "无权访问")
@@ -87,6 +102,14 @@ func (a *InboundController) restrictedSubscription(c *gin.Context) {
 	}
 	var remoteInbound interface{}
 	if v, e := a.serverService.RemoteInbound(inbound.Port); e == nil && v != nil {
+		protocol, _ := v["protocol"].(string)
+		settings, _ := v["settings"].(string)
+		masked, err := service.WithLoginPassword(model.Protocol(protocol), settings, password)
+		if err != nil {
+			jsonMsg(c, "获取订阅", err)
+			return
+		}
+		v["settings"] = masked
 		remoteInbound = v
 	}
 	jsonObj(c, gin.H{

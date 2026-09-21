@@ -11,6 +11,7 @@ import (
 const (
 	loginUser      = "LOGIN_USER"
 	loginInboundId = "LOGIN_INBOUND_ID"
+	loginPassword  = "LOGIN_INBOUND_PASSWORD"
 )
 
 func init() {
@@ -64,17 +65,23 @@ func IsRestricted(c *gin.Context) bool {
 }
 
 // SetRestrictedLogin 建立受限登录会话，密码校验已在 service 层完成
-func SetRestrictedLogin(c *gin.Context, inboundId int) error {
+func SetRestrictedLogin(c *gin.Context, inboundId int, password string) error {
 	// 写入占位用户，使 IsLogin 判定通过；其 Id 为 0 不会命中任何真实入站
 	placeholder := &model.User{
 		Id:       0,
 		Username: fmt.Sprintf("inbound-%d", inboundId),
 		Password: "",
 	}
-	if err := SetLoginUser(c, placeholder); err != nil {
-		return err
-	}
-	return SetLoginInboundId(c, inboundId)
+	s := sessions.Default(c)
+	s.Set(loginUser, placeholder)
+	s.Set(loginInboundId, inboundId)
+	s.Set(loginPassword, password)
+	return s.Save()
+}
+
+func GetLoginPassword(c *gin.Context) (string, bool) {
+	password, ok := sessions.Default(c).Get(loginPassword).(string)
+	return password, ok && password != ""
 }
 
 func ClearSession(c *gin.Context) {
