@@ -114,6 +114,14 @@ jobs:
             test -s "x-ui-linux-${arch}.tar.gz"
           done
           sha256sum x-ui-linux-*.tar.gz > SHA256SUMS
-          printf '%s\n' '新增「入站端口受限登录」：以入站端口为账号、入站密码为口令登录，登录后仅可见本人的入站，并提供二维码与订阅生成。' '移除 s390x 相关支持，安装脚本遇到不支持的 CPU 架构直接中止。' 'README 与安装脚本的下载地址统一指向自建 Gitea。' '包含 Linux amd64、arm64 安装包及 SHA256SUMS。' '面板版本：'"$VERSION" '打包 Xray-core v26.3.27；amd64 已执行程序启动检查。' > notes.md
+          printf '%s\n' \
+            '「受限登录」新增「流量汇总」菜单：以入站端口登录的账号仅能看到本人端口的流量汇总，其他端口不显示。' '' \
+            '修复流量审计与超限停用：远程流量采集改用统一 SQL 与批量解析；超限停用时按受影响行数判断是否需要重启面板；本地改动不再因后续远程操作失败而丢失。' '' \
+            '受限登录会话保留登录密码快照，返回入站配置时按协议（支持 trojan、shadowsocks、socks、http）正确填充密码字段，仅影响响应内容，不改动已保存的凭据。' '' \
+            '安装与升级地址按渠道写死：GitHub 渠道使用 GitHub 地址，Gitea 渠道使用 Gitea 地址；运行期不再推断渠道，也不回退另一渠道。' '' \
+            '补充单元测试（登录密码、远程流量解析、超限停用），并整理代码格式（gofmt）。' '' \
+            '包含 Linux amd64、arm64 安装包及 SHA256SUMS。' '' \
+            '面板版本：'"$VERSION" '' \
+            '打包 Xray-core v26.3.27；amd64 已执行程序启动检查。' > notes.md
           gh release create "$VERSION" --target "$COMMIT" --title "XUI_Custom $VERSION" --notes-file notes.md --draft x-ui-linux-*.tar.gz SHA256SUMS
           gh release edit "$VERSION" --draft=false --prerelease=false --latest
