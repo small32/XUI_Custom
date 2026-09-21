@@ -57,7 +57,7 @@ func (j *StatsNotifyJob) SendMsgToTgbot(msg string) {
 	bot.Send(info)
 }
 
-//Here run is a interface method of Job interface
+// Here run is a interface method of Job interface
 func (j *StatsNotifyJob) Run() {
 	if !j.xrayService.IsXrayRunning() {
 		return
