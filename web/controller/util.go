@@ -8,6 +8,7 @@ import (
 	"x-ui/config"
 	"x-ui/logger"
 	"x-ui/web/entity"
+	"x-ui/web/session"
 )
 
 func getUriId(c *gin.Context) int64 {
@@ -77,6 +78,7 @@ func html(c *gin.Context, name string, title string, data gin.H) {
 	data["title"] = title
 	data["request_uri"] = c.Request.RequestURI
 	data["base_path"] = c.GetString("base_path")
+	data["restricted"] = session.IsRestricted(c)
 	c.HTML(http.StatusOK, name, getContext(data))
 }
 

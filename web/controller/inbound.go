@@ -15,6 +15,7 @@ type InboundController struct {
 	inboundService service.InboundService
 	xrayService    service.XrayService
 	serverService  service.ServerManagementService
+	settingService service.SettingService
 }
 
 func NewInboundController(g *gin.RouterGroup) *InboundController {
@@ -31,6 +32,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/add", a.addInbound)
 	g.POST("/del/:id", a.delInbound)
 	g.POST("/update/:id", a.updateInbound)
+	g.POST("/subscription", a.restrictedSubscription)
 }
 
 func (a *InboundController) startTask() {
@@ -47,6 +49,16 @@ func (a *InboundController) startTask() {
 }
 
 func (a *InboundController) getInbounds(c *gin.Context) {
+	// 受限登录仅返回绑定的那一条入站
+	if inboundId := session.GetLoginInboundId(c); inboundId > 0 {
+		inbound, err := a.inboundService.GetInbound(inboundId)
+		if err != nil {
+			jsonMsg(c, "获取", err)
+			return
+		}
+		jsonObj(c, []*model.Inbound{inbound}, nil)
+		return
+	}
 	user := session.GetLoginUser(c)
 	inbounds, err := a.inboundService.GetInbounds(user.Id)
 	if err != nil {
@@ -54,6 +66,33 @@ func (a *InboundController) getInbounds(c *gin.Context) {
 		return
 	}
 	jsonObj(c, inbounds, nil)
+}
+
+// restrictedSubscription 受限登录账号获取"生成订阅"所需的只读数据，
+// 替代仅管理员可用的 /xui/setting/all 与 /xui/server/inbound/:port。
+func (a *InboundController) restrictedSubscription(c *gin.Context) {
+	inboundId := session.GetLoginInboundId(c)
+	if inboundId <= 0 {
+		pureJsonMsg(c, false, "无权访问")
+		return
+	}
+	inbound, err := a.inboundService.GetInbound(inboundId)
+	if err != nil {
+		jsonMsg(c, "获取", err)
+		return
+	}
+	serverName := ""
+	if allSetting, e := a.settingService.GetAllSetting(); e == nil && allSetting != nil {
+		serverName = allSetting.ServerName
+	}
+	var remoteInbound interface{}
+	if v, e := a.serverService.RemoteInbound(inbound.Port); e == nil && v != nil {
+		remoteInbound = v
+	}
+	jsonObj(c, gin.H{
+		"serverName":    serverName,
+		"remoteInbound": remoteInbound,
+	}, nil)
 }
 
 func (a *InboundController) addInbound(c *gin.Context) {

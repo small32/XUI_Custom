@@ -1,4 +1,14 @@
 {{define "menuItems"}}
+{{if .restricted}}
+<a-menu-item key="{{ .base_path }}xui/inbounds">
+    <a-icon type="user"></a-icon>
+    <span>入站列表</span>
+</a-menu-item>
+<a-menu-item key="{{ .base_path }}logout">
+    <a-icon type="logout"></a-icon>
+    <span>退出登录</span>
+</a-menu-item>
+{{else}}
 <a-menu-item key="{{ .base_path }}xui/">
     <a-icon type="dashboard"></a-icon>
     <span>系统状态</span>
@@ -37,6 +47,7 @@
     <a-icon type="logout"></a-icon>
     <span>退出登录</span>
 </a-menu-item>
+{{end}}
 {{end}}
 
 

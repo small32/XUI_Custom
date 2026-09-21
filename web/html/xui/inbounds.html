@@ -44,7 +44,7 @@
                 <transition name="list" appear>
                     <a-card hoverable>
                         <div slot="title">
-                            <a-button type="primary" icon="plus" @click="openAddInbound"></a-button>
+                            <a-button v-if="!restricted" type="primary" icon="plus" @click="openAddInbound"></a-button>
                         </div>
 <!--                        <a-input v-model="searchKey" placeholder="搜索" autofocus style="max-width: 300px"></a-input>-->
                         <a-table :columns="columns" :row-key="dbInbound => dbInbound.id"
@@ -63,13 +63,13 @@
                                         <a-menu-item v-if="dbInbound.hasLink()" key="clashSubscription">
                                             <a-icon type="link"></a-icon>生成订阅
                                         </a-menu-item>
-                                        <a-menu-item key="edit">
+                                        <a-menu-item v-if="!restricted" key="edit">
                                             <a-icon type="edit"></a-icon>编辑
                                         </a-menu-item>
-                                        <a-menu-item key="resetTraffic">
+                                        <a-menu-item v-if="!restricted" key="resetTraffic">
                                             <a-icon type="retweet"></a-icon>重置流量
                                         </a-menu-item>
-                                        <a-menu-item key="delete">
+                                        <a-menu-item v-if="!restricted" key="delete">
                                             <span style="color: #FF4D4F">
                                                 <a-icon type="delete"></a-icon>删除
                                             </span>
@@ -100,7 +100,7 @@
                                 <template v-else>无</template>
                             </template>
                             <template slot="enable" slot-scope="text, dbInbound">
-                                <a-switch v-model="dbInbound.enable" @change="switchEnable(dbInbound)"></a-switch>
+                                <a-switch v-model="dbInbound.enable" :disabled="restricted" @change="switchEnable(dbInbound)"></a-switch>
                             </template>
                             <template slot="expiryTime" slot-scope="text, dbInbound">
                                 <template v-if="dbInbound.expiryTime > 0">
@@ -141,6 +141,8 @@
 </a-layout>
 {{template "js" .}}
 <script>
+
+    const restricted = {{ .restricted }};
 
     const columns = [{
         title: "操作",
@@ -199,6 +201,7 @@
         el: '#app',
         data: {
             siderDrawer,
+            restricted,
             spinning: false,
             inbounds: [],
             dbInbounds: [],
@@ -360,24 +363,35 @@
             async showClashSubscription(dbInbound) {
                 if (!dbInbound.hasLink()) return;
                 const localAddress = location.hostname;
-                const panel = await HttpUtil.post('/xui/setting/all');
-                if (!panel.success) { this.$message.error(panel.msg || '读取面板配置失败'); return; }
-                const localName = (panel.obj.serverName || '').trim();
+                let localName = '';
+                let remoteObj = null;
+                if (restricted) {
+                    // 受限登录：走只读订阅接口，避免暴露面板设置与服务器管理接口
+                    const sub = await HttpUtil.post('/xui/inbound/subscription');
+                    if (!sub.success) { this.$message.error(sub.msg || '读取订阅数据失败'); return; }
+                    localName = ((sub.obj && sub.obj.serverName) || '').trim();
+                    remoteObj = sub.obj ? sub.obj.remoteInbound : null;
+                } else {
+                    const panel = await HttpUtil.post('/xui/setting/all');
+                    if (!panel.success) { this.$message.error(panel.msg || '读取面板配置失败'); return; }
+                    localName = (panel.obj.serverName || '').trim();
+                    const remote = await HttpUtil.post('/xui/server/inbound/' + dbInbound.port);
+                    if (!remote.success) {
+                        this.$message.error(remote.msg || '读取远程节点失败');
+                        return;
+                    }
+                    remoteObj = remote.obj;
+                }
                 if (!localName) { this.$message.error('请在面板配置中设置本地服务器名称'); return; }
                 let links = [dbInbound.genLink(localAddress, localName)];
-                const remote = await HttpUtil.post('/xui/server/inbound/' + dbInbound.port);
-                if (!remote.success) {
-                    this.$message.error(remote.msg || '读取远程节点失败');
-                    return;
-                }
-                if (remote.obj) {
-                    const remoteInbound = new DBInbound(remote.obj);
+                if (remoteObj) {
+                    const remoteInbound = new DBInbound(remoteObj);
                     const remoteAddress = remoteInbound.remoteAddress;
                     if (!remoteAddress) {
                         this.$message.error('第三方服务器地址为空，请检查服务器管理设置');
                         return;
                     }
-                    const remoteName = (remote.obj.remoteName || '').trim();
+                    const remoteName = (remoteObj.remoteName || '').trim();
                     if (!remoteName) { this.$message.error('请在服务器管理中设置第三方服务器名称'); return; }
                     const remoteLink = remoteInbound.genLink(remoteAddress, remoteName);
                     if (remoteLink) links.push(remoteLink);
