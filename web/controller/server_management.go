@@ -9,6 +9,7 @@ import (
 	"x-ui/web/entity"
 	"x-ui/web/global"
 	"x-ui/web/service"
+	"x-ui/web/session"
 )
 
 type ServerManagementController struct {
@@ -76,8 +77,10 @@ func (a *ServerManagementController) traffic(c *gin.Context) {
 func (a *ServerManagementController) summaryPage(c *gin.Context) {
 	html(c, "traffic_summary.html", "流量汇总", nil)
 }
+
+// summary 返回流量汇总。受限登录只返回其绑定入站那一条，管理员返回全部。
 func (a *ServerManagementController) summary(c *gin.Context) {
-	v, err := a.service.Summary()
+	v, err := a.service.Summary(session.GetLoginInboundId(c))
 	if err != nil {
 		jsonMsg(c, "获取流量汇总", err)
 		return

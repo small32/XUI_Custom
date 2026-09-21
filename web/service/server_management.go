@@ -173,7 +173,9 @@ const serverManagementSettingKey = "serverManagement"
 
 type ServerManagementService struct{}
 
-func (s *ServerManagementService) Summary() ([]*entity.TrafficSummary, error) {
+// Summary 汇总各入站的流量。inboundId > 0 时只汇总该入站（受限登录专用），
+// 在查询阶段就限定范围，避免其他端口的数据进入内存或被带出去。
+func (s *ServerManagementService) Summary(inboundId int) ([]*entity.TrafficSummary, error) {
 	remote, err := s.GetTrafficCache()
 	if err != nil {
 		return nil, err
@@ -183,7 +185,11 @@ func (s *ServerManagementService) Summary() ([]*entity.TrafficSummary, error) {
 		by[v.Port] = v
 	}
 	var local []model.Inbound
-	if err = database.GetDB().Find(&local).Error; err != nil {
+	query := database.GetDB()
+	if inboundId > 0 {
+		query = query.Where("id = ?", inboundId)
+	}
+	if err = query.Find(&local).Error; err != nil {
 		return nil, err
 	}
 	out := make([]*entity.TrafficSummary, 0, len(local))

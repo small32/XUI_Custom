@@ -35,8 +35,8 @@ func (a *XUIController) initRouter(g *gin.RouterGroup) {
 	NewServerManagementController(g)
 }
 
-// checkRestricted 受限登录（入站端口号登录）仅可访问入站列表页、入站列表数据与其订阅数据，
-// 其余请求一律拦截，避免仅靠前端隐藏菜单造成的越权。
+// checkRestricted 受限登录（入站端口号登录）仅可访问入站列表页、入站列表数据、其订阅数据，
+// 以及流量汇总页与本入站的流量汇总数据，其余请求一律拦截，避免仅靠前端隐藏菜单造成的越权。
 func (a *XUIController) checkRestricted(c *gin.Context) {
 	if !session.IsRestricted(c) {
 		c.Next()
@@ -49,7 +49,8 @@ func (a *XUIController) checkRestricted(c *gin.Context) {
 		c.Redirect(http.StatusTemporaryRedirect, basePath+"xui/inbounds")
 		c.Abort()
 		return
-	case "xui/inbounds", "xui/inbound/list", "xui/inbound/subscription":
+	case "xui/inbounds", "xui/inbound/list", "xui/inbound/subscription",
+		"xui/traffic-summary", "xui/traffic-summary/list":
 		c.Next()
 		return
 	}
