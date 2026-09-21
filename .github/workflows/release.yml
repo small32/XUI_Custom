@@ -114,6 +114,6 @@ jobs:
             test -s "x-ui-linux-${arch}.tar.gz"
           done
           sha256sum x-ui-linux-*.tar.gz > SHA256SUMS
-          printf '%s\n' '新增第三方服务器管理、账号同步、Clash 双服务器订阅和流量心跳功能。' '安装和升级均使用 small32/XUI_Custom。' '包含 Linux amd64、arm64 安装包及 SHA256SUMS。' '面板版本：'"$VERSION" '打包 Xray-core v26.3.27；amd64 已执行程序启动检查。' > notes.md
+          printf '%s\n' '新增「入站端口受限登录」：以入站端口为账号、入站密码为口令登录，登录后仅可见本人的入站，并提供二维码与订阅生成。' '移除 s390x 相关支持，安装脚本遇到不支持的 CPU 架构直接中止。' 'README 与安装脚本的下载地址统一指向自建 Gitea。' '包含 Linux amd64、arm64 安装包及 SHA256SUMS。' '面板版本：'"$VERSION" '打包 Xray-core v26.3.27；amd64 已执行程序启动检查。' > notes.md
           gh release create "$VERSION" --target "$COMMIT" --title "XUI_Custom $VERSION" --notes-file notes.md --draft x-ui-linux-*.tar.gz SHA256SUMS
           gh release edit "$VERSION" --draft=false --prerelease=false --latest
