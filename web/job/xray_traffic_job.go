@@ -28,6 +28,11 @@ func NewXrayTrafficJob() *XrayTrafficJob {
 
 func (j *XrayTrafficJob) Run() {
 	if !j.xrayService.IsXrayRunning() {
+		j.mu.Lock()
+		// A stopped/restarted Xray has a fresh stats counter. Do not subtract
+		// the new process counters from the previous process baseline.
+		j.baseline = make(map[string]xray.Traffic)
+		j.mu.Unlock()
 		return
 	}
 	cur, err := j.xrayService.GetXrayTraffic()

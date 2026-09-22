@@ -66,7 +66,8 @@ type process struct {
 	// 注意：此锁不可重入，已持锁的代码只能调用带 Locked 后缀的内部函数。
 	mu sync.RWMutex
 
-	cmd *exec.Cmd
+	cmd     *exec.Cmd
+	running bool
 
 	version string
 	apiPort int
@@ -92,13 +93,7 @@ func (p *process) IsRunning() bool {
 
 // isRunningLocked 调用方必须已持有 p.mu。
 func (p *process) isRunningLocked() bool {
-	if p.cmd == nil || p.cmd.Process == nil {
-		return false
-	}
-	if p.cmd.ProcessState == nil {
-		return true
-	}
-	return false
+	return p.running
 }
 
 func (p *process) GetErr() error {
@@ -242,13 +237,19 @@ func (p *process) Start() (err error) {
 		}
 	}()
 
+	if err = cmd.Start(); err != nil {
+		p.exitErr = err
+		return err
+	}
+	p.running = true
 	go func() {
-		err := cmd.Run()
+		err := cmd.Wait()
+		p.mu.Lock()
+		p.running = false
 		if err != nil {
-			p.mu.Lock()
 			p.exitErr = err
-			p.mu.Unlock()
 		}
+		p.mu.Unlock()
 	}()
 
 	p.version = version

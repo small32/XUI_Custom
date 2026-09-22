@@ -10,7 +10,7 @@
 <a-alert type="warning" show-icon style="margin-bottom:16px" v-if="pendingDeletes.length > 0">
 <a-slot message>
 <span>警告：以下端口在第三方服务器上的同步删除失败，请手动登录远程服务器删除对应账号：</span>
-<span style="margin-left:8px;font-weight:bold">{{pendingDeletes.join(', ')}}</span>
+<span style="margin-left:8px;font-weight:bold">[[pendingDeletes.join(', ')]]</span>
 </a-slot>
 </a-alert>
 <a-form layout="vertical">

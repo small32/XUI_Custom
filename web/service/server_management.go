@@ -13,8 +13,8 @@ import (
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
-	"x-ui/web/entity"
 	"x-ui/logger"
+	"x-ui/web/entity"
 )
 
 // SyncInbound 把入站同步到远端。create 为真时插入新账号；否则更新已有账号。
@@ -157,12 +157,13 @@ func deleteSyncedInboundSQL(port int) string {
 // 再用 upsert 写入新端口账号，从而把账号从旧端口"迁移"到新端口。
 // 否则远端会残留旧端口账号继续可用，成为孤儿账号。
 func syncInboundSQLWithOldPort(inbound *model.Inbound, oldPort int) string {
-	// deleteSeq 删除旧端口残留账号（若不存在则命中 0 行，无害）。
-	deleteSeq := deleteSyncedInboundSQL(oldPort)
-	// insertSeq 用 upsert 形态写入新端口：新端口不存在则创建，已存在则按新配置覆盖。
-	// 强制走 create/upsert 分支，避免 update 分支因新端口不存在而被 guard 跳过。
-	insertSeq := syncInboundSQL(inbound, false, true)
-	return deleteSeq + insertSeq
+	// 删除旧端口与写入新端口必须属于同一个事务，否则写入失败时会留下
+	// “旧账号已删、新账号不存在”的远端空窗。
+	deleteSeq := strings.TrimPrefix(deleteSyncedInboundSQL(oldPort), ".timeout 10000\nBEGIN IMMEDIATE;\n")
+	deleteSeq = strings.TrimSuffix(deleteSeq, "SELECT changes();\nCOMMIT;\n")
+	insertSeq := strings.TrimPrefix(syncInboundSQL(inbound, false, true), ".timeout 10000\nBEGIN IMMEDIATE;\n")
+	insertSeq = strings.TrimSuffix(insertSeq, "SELECT changes();\nCOMMIT;\n")
+	return ".timeout 10000\nBEGIN IMMEDIATE;\n" + deleteSeq + insertSeq + "SELECT changes();\nCOMMIT;\n"
 }
 
 func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{}, error) {
@@ -651,7 +652,9 @@ fi`, ports)
 
 // Persist restart intent in the same transaction as account changes.
 func withSyncReloadIntent(sql string) string {
-	return strings.Replace(sql, "COMMIT;", "INSERT INTO settings(key,value) SELECT 'syncReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='syncReloadPending');\nCOMMIT;", 1)
+	// changes() must be read immediately after the account write. Reading it
+	// after SELECT changes() itself returns zero and loses the reload intent.
+	return strings.Replace(sql, "SELECT changes();\nCOMMIT;", "INSERT INTO settings(key,value) SELECT 'syncReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='syncReloadPending');\nSELECT changes();\nCOMMIT;", 1)
 }
 
 const syncReloadCommand = `pending=$(sqlite3 -batch -noheader /etc/x-ui/x-ui.db "SELECT count(*) FROM settings WHERE key='syncReloadPending';") || exit $?

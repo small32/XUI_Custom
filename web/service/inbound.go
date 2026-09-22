@@ -209,7 +209,7 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	oldInbound.Enable = inbound.Enable
 	if inbound.Enable {
 		oldInbound.DisabledBy = ""
-	} else {
+	} else if oldInbound.Enable && oldInbound.DisabledBy == "" {
 		oldInbound.DisabledBy = "manual"
 	}
 	oldInbound.ExpiryTime = inbound.ExpiryTime

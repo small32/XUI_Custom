@@ -5,7 +5,6 @@ import (
 	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"net"
 	"net/http"
-	"strings"
 	"x-ui/config"
 	"x-ui/logger"
 	"x-ui/util/common"
@@ -23,15 +22,15 @@ func getUriId(c *gin.Context) int64 {
 }
 
 func getRemoteIp(c *gin.Context) string {
-	value := c.GetHeader("X-Forwarded-For")
-	if value != "" {
-		ips := strings.Split(value, ",")
-		return ips[0]
-	} else {
-		addr := c.Request.RemoteAddr
-		ip, _, _ := net.SplitHostPort(addr)
-		return ip
+	// Do not trust a client supplied forwarding header for login throttling.
+	// If a trusted reverse proxy is added later, its network must be validated
+	// before using X-Forwarded-For.
+	addr := c.Request.RemoteAddr
+	ip, _, _ := net.SplitHostPort(addr)
+	if ip == "" {
+		return addr
 	}
+	return ip
 }
 
 func jsonMsg(c *gin.Context, msg string, err error) {

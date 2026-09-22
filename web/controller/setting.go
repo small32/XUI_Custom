@@ -78,9 +78,9 @@ func (a *SettingController) updateUser(c *gin.Context) {
 	}
 	err = a.userService.UpdateUser(user.Id, form.NewUsername, form.NewPassword)
 	if err == nil {
-		user.Username = form.NewUsername
-		user.Password = form.NewPassword
-		session.SetLoginUser(c, user)
+		if refreshed := a.userService.CheckUser(form.NewUsername, form.NewPassword); refreshed != nil {
+			session.SetLoginUser(c, refreshed)
+		}
 	}
 	jsonMsg(c, "修改用户", err)
 }

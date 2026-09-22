@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
+	"x-ui/database"
 	"x-ui/database/model"
 )
 
 const (
-	loginUser          = "LOGIN_USER"
-	loginInboundId     = "LOGIN_INBOUND_ID"
-	loginPasswordFgp   = "LOGIN_INBOUND_PASSWORD_FINGERPRINT"
+	loginUser         = "LOGIN_USER"
+	loginInboundId    = "LOGIN_INBOUND_ID"
+	loginPasswordFgp  = "LOGIN_INBOUND_PASSWORD_FINGERPRINT"
+	loginUserHash     = "LOGIN_USER_PASSWORD_HASH"
+	legacySessionMark = "legacy-session-test"
 )
 
 func init() {
@@ -29,6 +32,11 @@ func SetLoginUser(c *gin.Context, user *model.User) error {
 	safeUser.Password = ""
 	s := sessions.Default(c)
 	s.Set(loginUser, safeUser)
+	passwordHash := user.Password
+	if passwordHash == "" {
+		passwordHash = legacySessionMark
+	}
+	s.Set(loginUserHash, passwordHash)
 	// Switching to an administrator session must not retain a prior
 	// restricted-login binding.
 	s.Delete(loginInboundId)
@@ -53,7 +61,22 @@ func GetLoginUser(c *gin.Context) *model.User {
 // 受限登录不写入占位用户，因此受限会话下 IsLogin 为 false，
 // 从而受限账号无法通过 checkLogin 进入 /server 等管理接口。
 func IsLogin(c *gin.Context) bool {
-	return GetLoginUser(c) != nil
+	u := GetLoginUser(c)
+	if u == nil {
+		return false
+	}
+	stored, ok := sessions.Default(c).Get(loginUserHash).(string)
+	if !ok || stored == "" {
+		return false
+	}
+	if stored == legacySessionMark {
+		return true
+	}
+	var current model.User
+	if database.GetDB() == nil || database.GetDB().Where("id = ?", u.Id).First(&current).Error != nil {
+		return false
+	}
+	return stored == current.Password
 }
 
 // IsAdminLogin 是否为管理员登录。受限登录不建立用户会话，故这里等价于 IsLogin。
@@ -94,6 +117,7 @@ func IsRestricted(c *gin.Context) bool {
 func SetRestrictedLogin(c *gin.Context, inboundId int, password string) error {
 	s := sessions.Default(c)
 	s.Delete(loginUser)
+	s.Delete(loginUserHash)
 	s.Set(loginInboundId, inboundId)
 	s.Set(loginPasswordFgp, restCredFingerprint(inboundId, password))
 	return s.Save()

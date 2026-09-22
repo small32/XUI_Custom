@@ -136,14 +136,22 @@ install_x-ui() {
         exit 1
     fi
 
-    systemctl stop x-ui
-    if [[ -e /usr/local/x-ui/ ]]; then
-        rm /usr/local/x-ui/ -rf
+    staging_dir=$(mktemp -d /usr/local/x-ui-staging.XXXXXX) || exit 1
+    if ! tar -xzf x-ui-linux-${arch}.tar.gz -C "$staging_dir"; then
+        echo -e "${red}安装包解压失败，保留当前安装${plain}"; rm -rf "$staging_dir"; exit 1
     fi
-
-    tar zxvf x-ui-linux-${arch}.tar.gz
-    rm x-ui-linux-${arch}.tar.gz -f
-    cd x-ui
+    if [[ ! -x "$staging_dir/x-ui/x-ui" || ! -x "$staging_dir/x-ui/bin/xray-linux-${arch}" ]]; then
+        echo -e "${red}安装包内容不完整，保留当前安装${plain}"; rm -rf "$staging_dir"; exit 1
+    fi
+    rm -f x-ui-linux-${arch}.tar.gz
+    systemctl stop x-ui
+    old_dir="/usr/local/x-ui"
+    backup_dir="/usr/local/x-ui.previous"
+    rm -rf "$backup_dir"
+    if [[ -e "$old_dir" ]]; then mv "$old_dir" "$backup_dir"; fi
+    mv "$staging_dir/x-ui" "$old_dir" || { [[ -e "$backup_dir" ]] && mv "$backup_dir" "$old_dir"; rm -rf "$staging_dir"; exit 1; }
+    rm -rf "$staging_dir"
+    cd "$old_dir"
     chmod +x x-ui bin/xray-linux-${arch}
     cp -f x-ui.service /etc/systemd/system/
     wget --no-check-certificate -O /usr/bin/x-ui ${XUI_RAW_URL}/x-ui.sh
@@ -158,7 +166,15 @@ install_x-ui() {
     #echo -e ""
     systemctl daemon-reload
     systemctl enable x-ui
-    systemctl start x-ui
+    if ! systemctl start x-ui; then
+        echo -e "${red}新版本启动失败，正在恢复旧版本${plain}"
+        rm -rf "$old_dir"
+        [[ -e "$backup_dir" ]] && mv "$backup_dir" "$old_dir"
+        systemctl daemon-reload
+        systemctl start x-ui
+        exit 1
+    fi
+    rm -rf "$backup_dir"
 
     echo -e "${green}x-ui v${last_version}${plain} 安装完成，面板已启动，"
     echo -e "发行页：${green}${XUI_RELEASES_PAGE}${plain}，后续升级从同一发行页获取。"

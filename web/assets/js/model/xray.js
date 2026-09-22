@@ -921,9 +921,9 @@ class Inbound extends XrayCommonClass {
             path = this.stream.grpc.serviceName;
         }
 
-        if (this.stream.security === 'tls') {
-            if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
-                address = this.stream.tls.server;
+		if (this.stream.security === 'tls') {
+			if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
+				host = this.stream.tls.server;
             }
         }
 
@@ -999,10 +999,11 @@ class Inbound extends XrayCommonClass {
                 break;
         }
 
-        if (this.stream.security === 'tls') {
-            if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
-                address = this.stream.tls.server;
-                params.set("sni", address);
+		if (this.stream.security === 'tls') {
+			if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
+				// tls.server is the SNI name; keep the supplied node address as
+				// the socket destination when they differ.
+				params.set("sni", this.stream.tls.server);
             }
         }
 
@@ -1029,10 +1030,10 @@ class Inbound extends XrayCommonClass {
             + '#' + encodeURIComponent(remark);
     }
 
-    genTrojanLink(address='', remark='') {
-        let settings = this.settings;
-        return `trojan://${settings.clients[0].password}@${address}:${this.port}#${encodeURIComponent(remark)}`;
-    }
+	genTrojanLink(address='', remark='') {
+		let settings = this.settings;
+		return `trojan://${encodeURIComponent(settings.clients[0].password)}@${address}:${this.port}#${encodeURIComponent(remark)}`;
+	}
 
     genLink(address='', remark='') {
         switch (this.protocol) {
