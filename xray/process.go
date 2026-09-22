@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"x-ui/util/common"
 
@@ -58,6 +59,13 @@ func NewProcess(xrayConfig *Config) *Process {
 }
 
 type process struct {
+	// mu 保护下面的运行期字段。Start/Stop 走写锁，IsRunning 与各 Get* 走读锁。
+	// 此前这些字段完全无保护，而面板状态轮询、10 秒流量任务会在启停过程中
+	// 并发读取 cmd / version / apiPort / exitErr，构成真实数据竞争。
+	//
+	// 注意：此锁不可重入，已持锁的代码只能调用带 Locked 后缀的内部函数。
+	mu sync.RWMutex
+
 	cmd *exec.Cmd
 
 	version string
@@ -77,6 +85,13 @@ func newProcess(config *Config) *process {
 }
 
 func (p *process) IsRunning() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.isRunningLocked()
+}
+
+// isRunningLocked 调用方必须已持有 p.mu。
+func (p *process) isRunningLocked() bool {
 	if p.cmd == nil || p.cmd.Process == nil {
 		return false
 	}
@@ -87,10 +102,15 @@ func (p *process) IsRunning() bool {
 }
 
 func (p *process) GetErr() error {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.exitErr
 }
 
 func (p *process) GetResult() string {
+	// lines 指向的 queue 自带内部同步，这里只需保护 lines / exitErr 两个字段的读取。
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	if p.lines.Empty() && p.exitErr != nil {
 		return p.exitErr.Error()
 	}
@@ -105,18 +125,25 @@ func (p *process) GetResult() string {
 }
 
 func (p *process) GetVersion() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.version
 }
 
 func (p *Process) GetAPIPort() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.apiPort
 }
 
 func (p *Process) GetConfig() *Config {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 	return p.config
 }
 
-func (p *process) refreshAPIPort() {
+// refreshAPIPortLocked 调用方必须已持有 p.mu 写锁。
+func (p *process) refreshAPIPortLocked() {
 	for _, inbound := range p.config.InboundConfigs {
 		if inbound.Tag == "api" {
 			p.apiPort = inbound.Port
@@ -125,23 +152,29 @@ func (p *process) refreshAPIPort() {
 	}
 }
 
-func (p *process) refreshVersion() {
+// queryVersion 执行 xray -version 取版本号。不触碰进程字段，由调用方在持锁后写入，
+// 避免占着写锁做外部命令 IO。
+func queryVersion() string {
 	cmd := exec.Command(GetBinaryPath(), "-version")
 	data, err := cmd.Output()
 	if err != nil {
-		p.version = "Unknown"
-	} else {
-		datas := bytes.Split(data, []byte(" "))
-		if len(datas) <= 1 {
-			p.version = "Unknown"
-		} else {
-			p.version = string(datas[1])
-		}
+		return "Unknown"
 	}
+	datas := bytes.Split(data, []byte(" "))
+	if len(datas) <= 1 {
+		return "Unknown"
+	}
+	return string(datas[1])
 }
 
 func (p *process) Start() (err error) {
-	if p.IsRunning() {
+	// 版本号查询要执行外部命令，先算好，避免持写锁做 IO。
+	version := queryVersion()
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.isRunningLocked() {
 		return errors.New("xray is already running")
 	}
 
@@ -212,28 +245,37 @@ func (p *process) Start() (err error) {
 	go func() {
 		err := cmd.Run()
 		if err != nil {
+			p.mu.Lock()
 			p.exitErr = err
+			p.mu.Unlock()
 		}
 	}()
 
-	p.refreshVersion()
-	p.refreshAPIPort()
+	p.version = version
+	p.refreshAPIPortLocked()
 
 	return nil
 }
 
 func (p *process) Stop() error {
-	if !p.IsRunning() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.isRunningLocked() {
 		return errors.New("xray is not running")
 	}
 	return p.cmd.Process.Kill()
 }
 
 func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {
-	if p.apiPort == 0 {
-		return nil, common.NewError("xray api port wrong:", p.apiPort)
+	// 取一次端口快照，后续网络请求在锁外执行，避免长时间占锁。
+	p.mu.RLock()
+	apiPort := p.apiPort
+	p.mu.RUnlock()
+
+	if apiPort == 0 {
+		return nil, common.NewError("xray api port wrong:", apiPort)
 	}
-	conn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%v", p.apiPort), grpc.WithInsecure())
+	conn, err := grpc.Dial(fmt.Sprintf("127.0.0.1:%v", apiPort), grpc.WithInsecure())
 	if err != nil {
 		return nil, err
 	}

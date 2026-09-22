@@ -10,10 +10,24 @@ import (
 	"go.uber.org/atomic"
 )
 
-var p *xray.Process
-var lock sync.Mutex
+// lock 保护下面的包级变量 p 与 result。
+// 读路径（面板状态轮询、10 秒流量任务、xray 存活检测等）持读锁，
+// 写路径（重启/停止 xray）持写锁。此前读路径完全不加锁，与重启并发时
+// 对 p / result 构成真实数据竞争。
+//
+// 注意：此锁不可重入，已持锁的代码只能调用带 Locked 后缀的内部函数。
+var (
+	lock   sync.RWMutex
+	p      *xray.Process
+	result string
+)
+
 var isNeedXrayRestart atomic.Bool
-var result string
+
+// isXrayRunningLocked 调用方必须已持有 lock。
+func isXrayRunningLocked() bool {
+	return p != nil && p.IsRunning()
+}
 
 type XrayService struct {
 	inboundService InboundService
@@ -21,10 +35,14 @@ type XrayService struct {
 }
 
 func (s *XrayService) IsXrayRunning() bool {
-	return p != nil && p.IsRunning()
+	lock.RLock()
+	defer lock.RUnlock()
+	return isXrayRunningLocked()
 }
 
 func (s *XrayService) GetXrayErr() error {
+	lock.RLock()
+	defer lock.RUnlock()
 	if p == nil {
 		return nil
 	}
@@ -32,20 +50,31 @@ func (s *XrayService) GetXrayErr() error {
 }
 
 func (s *XrayService) GetXrayResult() string {
-	if result != "" {
-		return result
+	lock.RLock()
+	cached := result
+	running := isXrayRunningLocked()
+	proc := p
+	lock.RUnlock()
+
+	if cached != "" {
+		return cached
 	}
-	if s.IsXrayRunning() {
+	if running || proc == nil {
 		return ""
 	}
-	if p == nil {
-		return ""
-	}
-	result = p.GetResult()
-	return result
+
+	// GetResult 会摘取进程日志，放到锁外执行，避免拖住状态轮询；
+	// 取到结果后再加写锁回填缓存。
+	res := proc.GetResult()
+	lock.Lock()
+	result = res
+	lock.Unlock()
+	return res
 }
 
 func (s *XrayService) GetXrayVersion() string {
+	lock.RLock()
+	defer lock.RUnlock()
 	if p == nil {
 		return "Unknown"
 	}
@@ -79,10 +108,16 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 }
 
 func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, error) {
-	if !s.IsXrayRunning() {
+	// 一次取到指针与运行状态，避免 IsXrayRunning 与 p 分两次读导致状态错位。
+	lock.RLock()
+	proc := p
+	running := isXrayRunningLocked()
+	lock.RUnlock()
+
+	if !running {
 		return nil, errors.New("xray is not running")
 	}
-	return p.GetTraffic(true)
+	return proc.GetTraffic(true)
 }
 
 func (s *XrayService) RestartXray(isForce bool) error {
@@ -112,7 +147,7 @@ func (s *XrayService) StopXray() error {
 	lock.Lock()
 	defer lock.Unlock()
 	logger.Debug("stop xray")
-	if s.IsXrayRunning() {
+	if isXrayRunningLocked() {
 		return p.Stop()
 	}
 	return errors.New("xray is not running")
