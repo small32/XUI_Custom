@@ -17,7 +17,7 @@ func TestMonthlyResetRequestsLocalReload(t *testing.T) {
 	x := new(XrayService)
 	x.IsNeedRestartAndSetFalse()
 	defer x.IsNeedRestartAndSetFalse()
-	if err := database.GetDB().Create(&model.Inbound{Port: 12345, Tag: "test", MonthlyReset: true, Enable: false, Up: 100, Total: 100}).Error; err != nil {
+	if err := database.GetDB().Create(&model.Inbound{Port: 12345, Tag: "test", MonthlyReset: true, Enable: false, DisabledBy: "limit", Up: 100, Total: 100}).Error; err != nil {
 		t.Fatal(err)
 	}
 	s := new(ServerManagementService)

@@ -38,7 +38,7 @@ func TestMonthlyResetClearsCachedCounters(t *testing.T) {
 	if err := db.Create(&model.Setting{Key: serverManagementSettingKey, Value: `{"autoDisable":true}`}).Error; err != nil {
 		t.Fatal(err)
 	}
-	if err := db.Create(&model.Inbound{Port: 1234, Tag: "monthly", MonthlyReset: true, Total: 100, Enable: false}).Error; err != nil {
+	if err := db.Create(&model.Inbound{Port: 1234, Tag: "monthly", MonthlyReset: true, Total: 100, Enable: false, DisabledBy: "limit"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	s := new(ServerManagementService)

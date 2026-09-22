@@ -1,12 +1,17 @@
 package database
 
 import (
+	"crypto/rand"
+	"fmt"
+	"io/fs"
+	"math/big"
+	"os"
+	"path"
+
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/logger"
-	"io/fs"
-	"os"
-	"path"
 	"x-ui/config"
 	"x-ui/database/model"
 )
@@ -24,13 +29,38 @@ func initUser() error {
 		return err
 	}
 	if count == 0 {
+		// 首次安装不再使用固定弱口令 admin/admin，改为随机初始密码，
+		// 并把凭据打印到日志（仅首次，便于管理员登录后自行修改）。
+		pass := randomPassword(14)
+		hashed, err := bcrypt.GenerateFromPassword([]byte(pass), 12)
+		if err != nil {
+			return err
+		}
 		user := &model.User{
 			Username: "admin",
-			Password: "admin",
+			Password: string(hashed),
 		}
-		return db.Create(user).Error
+		if err := db.Create(user).Error; err != nil {
+			return err
+		}
+		fmt.Printf("首次初始化面板：默认用户名 admin，初始密码 %s（请尽快登录后修改）\n", pass)
 	}
 	return nil
+}
+
+// randomPassword 用 crypto/rand 生成 n 位随机密码（含大小写与数字）。
+func randomPassword(n int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, n)
+	for i := range b {
+		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(charset))))
+		if err != nil {
+			// crypto/rand 基本不会失败；失败退化为固定字符，保证仍可登录。
+			idx = big.NewInt(int64(i % len(charset)))
+		}
+		b[i] = charset[idx.Int64()]
+	}
+	return string(b)
 }
 
 // initInbound 建入站表，并处理“按月计算”（monthly_reset）这个新增列的老库迁移。

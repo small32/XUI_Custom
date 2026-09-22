@@ -33,11 +33,11 @@ type AllSetting struct {
 	WebCertFile        string `json:"webCertFile" form:"webCertFile"`
 	WebKeyFile         string `json:"webKeyFile" form:"webKeyFile"`
 	WebBasePath        string `json:"webBasePath" form:"webBasePath"`
-	TgBotEnable        bool   `json:"tgBotEnable" form:"tgBotEnable"`
-	TgBotToken         string `json:"tgBotToken" form:"tgBotToken"`
-	TgBotChatId        int    `json:"tgBotChatId" form:"tgBotChatId"`
-	TgRunTime          string `json:"tgRunTime" form:"tgRunTime"`
 	XrayTemplateConfig string `json:"xrayTemplateConfig" form:"xrayTemplateConfig"`
+
+	// RestrictedLoginEnable 是否允许非管理员用户（凭端口号+入站密码）登录。
+	// 关闭时禁止受限账号登录面板。
+	RestrictedLoginEnable bool `json:"restrictedLoginEnable" form:"restrictedLoginEnable"`
 
 	TimeLocation string `json:"timeLocation" form:"timeLocation"`
 }

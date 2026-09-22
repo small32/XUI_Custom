@@ -1,6 +1,7 @@
 package session
 
 import (
+	"crypto/sha256"
 	"encoding/gob"
 	"fmt"
 	"github.com/gin-contrib/sessions"
@@ -9,9 +10,9 @@ import (
 )
 
 const (
-	loginUser      = "LOGIN_USER"
-	loginInboundId = "LOGIN_INBOUND_ID"
-	loginPassword  = "LOGIN_INBOUND_PASSWORD"
+	loginUser          = "LOGIN_USER"
+	loginInboundId     = "LOGIN_INBOUND_ID"
+	loginPasswordFgp   = "LOGIN_INBOUND_PASSWORD_FINGERPRINT"
 )
 
 func init() {
@@ -19,12 +20,19 @@ func init() {
 }
 
 func SetLoginUser(c *gin.Context, user *model.User) error {
+	// 密码只用于登录校验，绝不允许进入客户端会话 Cookie。
+	// 这里的 key 未加密，仅签名，gob 序列化后可被 base64 还原，因此必须清空。
+	if user == nil {
+		return fmt.Errorf("user cannot be nil")
+	}
+	safeUser := *user
+	safeUser.Password = ""
 	s := sessions.Default(c)
-	s.Set(loginUser, user)
+	s.Set(loginUser, safeUser)
 	// Switching to an administrator session must not retain a prior
-	// restricted-login binding or its password snapshot.
+	// restricted-login binding.
 	s.Delete(loginInboundId)
-	s.Delete(loginPassword)
+	s.Delete(loginPasswordFgp)
 	return s.Save()
 }
 
@@ -41,8 +49,16 @@ func GetLoginUser(c *gin.Context) *model.User {
 	return &user
 }
 
+// IsLogin 是否为管理员已登录（持有真实用户会话）。
+// 受限登录不写入占位用户，因此受限会话下 IsLogin 为 false，
+// 从而受限账号无法通过 checkLogin 进入 /server 等管理接口。
 func IsLogin(c *gin.Context) bool {
 	return GetLoginUser(c) != nil
+}
+
+// IsAdminLogin 是否为管理员登录。受限登录不建立用户会话，故这里等价于 IsLogin。
+func IsAdminLogin(c *gin.Context) bool {
+	return IsLogin(c) && !IsRestricted(c)
 }
 
 // SetLoginInboundId 记录受限登录绑定的入站 id
@@ -71,24 +87,33 @@ func IsRestricted(c *gin.Context) bool {
 	return GetLoginInboundId(c) > 0
 }
 
-// SetRestrictedLogin 建立受限登录会话，密码校验已在 service 层完成
+// SetRestrictedLogin 建立受限登录会话，密码校验已在 service 层完成。
+// 出于安全考虑，入站密码绝不写入客户端会话 Cookie，这里仅记录密码的
+// SHA-256 指纹（单向，不泄露明文），供密码轮换后使旧会话失效。
+// 受限登录不写入占位用户：受限账号走独立的受限路由，而非管理员判定。
 func SetRestrictedLogin(c *gin.Context, inboundId int, password string) error {
-	// 写入占位用户，使 IsLogin 判定通过；其 Id 为 0 不会命中任何真实入站
-	placeholder := &model.User{
-		Id:       0,
-		Username: fmt.Sprintf("inbound-%d", inboundId),
-		Password: "",
-	}
 	s := sessions.Default(c)
-	s.Set(loginUser, placeholder)
+	s.Delete(loginUser)
 	s.Set(loginInboundId, inboundId)
-	s.Set(loginPassword, password)
+	s.Set(loginPasswordFgp, restCredFingerprint(inboundId, password))
 	return s.Save()
 }
 
-func GetLoginPassword(c *gin.Context) (string, bool) {
-	password, ok := sessions.Default(c).Get(loginPassword).(string)
-	return password, ok && password != ""
+// IsRestrictedCredValid 校验受限会话是否仍然有效：比对会话记录的入站密码指纹
+// 与当前库内密码指纹。管理员轮换入站密码后指纹变化，旧会话随即失效，
+// 需以新密码重新受限登录。
+func IsRestrictedCredValid(c *gin.Context, inboundId int, currentPassword string) bool {
+	expected, ok := sessions.Default(c).Get(loginPasswordFgp).(string)
+	if !ok || expected == "" {
+		return false
+	}
+	return expected == restCredFingerprint(inboundId, currentPassword)
+}
+
+// restCredFingerprint 计算入站 id 与密码的 SHA-256 指纹。
+func restCredFingerprint(inboundId int, password string) string {
+	h := sha256.Sum256([]byte(fmt.Sprintf("%d\x00%s", inboundId, password)))
+	return fmt.Sprintf("%x", h[:])
 }
 
 func ClearSession(c *gin.Context) {

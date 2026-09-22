@@ -295,6 +295,11 @@ func (p *process) GetTraffic(reset bool) ([]*Traffic, error) {
 	traffics := make([]*Traffic, 0)
 	for _, stat := range resp.GetStat() {
 		matchs := trafficRegex.FindStringSubmatch(stat.Name)
+		// xray 会返回 user 级统计等不符合本正则的项，matchs 为 nil，
+		// 直接取下标会触发 index out of range panic，导致整个面板崩溃，故判空跳过。
+		if len(matchs) < 4 {
+			continue
+		}
 		isInbound := matchs[1] == "inbound"
 		tag := matchs[2]
 		isDown := matchs[3] == "downlink"

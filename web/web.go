@@ -168,6 +168,15 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	assetsBasePath := basePath + "assets/"
 
 	store := cookie.NewStore(secret)
+	// 会话 Cookie 默认不设 HttpOnly/SameSite，存在被 JS 读取与跨站利用的风险。
+	// HttpOnly 防脚本读取；SameSite=Lax 阻断跨站携带，又不影响同站页面导航。
+	// （Secure 需 HTTPS 环境，为避免破坏纯 HTTP 部署暂不强制开启。）
+	store.Options(sessions.Options{
+		Path:     "/",
+		MaxAge:   60 * 60 * 24 * 30,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 	engine.Use(sessions.Sessions("session", store))
 	engine.Use(func(c *gin.Context) {
 		c.Set("base_path", basePath)
@@ -231,48 +240,9 @@ func (s *Server) initI18n(engine *gin.Engine) error {
 		return err
 	}
 
-	findI18nParamNames := func(key string) []string {
-		names := make([]string, 0)
-		keyLen := len(key)
-		for i := 0; i < keyLen-1; i++ {
-			if key[i:i+2] == "{{" { // 判断开头 "{{"
-				j := i + 2
-				isFind := false
-				for ; j < keyLen-1; j++ {
-					if key[j:j+2] == "}}" { // 结尾 "}}"
-						isFind = true
-						break
-					}
-				}
-				if isFind {
-					names = append(names, key[i+3:j])
-				}
-			}
-		}
-		return names
-	}
-
-	var localizer *i18n.Localizer
-
-	engine.FuncMap["i18n"] = func(key string, params ...string) (string, error) {
-		names := findI18nParamNames(key)
-		if len(names) != len(params) {
-			return "", common.NewError("find names:", names, "---------- params:", params, "---------- num not equal")
-		}
-		templateData := map[string]interface{}{}
-		for i := range names {
-			templateData[names[i]] = params[i]
-		}
-		return localizer.Localize(&i18n.LocalizeConfig{
-			MessageID:    key,
-			TemplateData: templateData,
-		})
-	}
-
 	engine.Use(func(c *gin.Context) {
 		accept := c.GetHeader("Accept-Language")
-		localizer = i18n.NewLocalizer(bundle, accept)
-		c.Set("localizer", localizer)
+		c.Set("localizer", i18n.NewLocalizer(bundle, accept))
 		c.Next()
 	})
 
@@ -287,32 +257,13 @@ func (s *Server) startTask() {
 	// 每 30 秒检查一次 xray 是否在运行
 	s.cron.AddJob("@every 30s", job.NewCheckXrayRunningJob())
 
-	go func() {
-		time.Sleep(time.Second * 5)
-		// 每 10 秒统计一次流量，首次启动延迟 5 秒，与重启 xray 的时间错开
-		s.cron.AddJob("@every 10s", job.NewXrayTrafficJob())
-	}()
+	// 每 10 秒统计一次流量。同步注册，避免此前延迟 goroutine 在
+	// SIGHUP 重启后向已停止/新实例的 cron 迟到注册造成竞态。
+	// xray 尚未就绪时 GetTraffic 内部会报错并记 Warning，下一轮自动重试。
+	s.cron.AddJob("@every 10s", job.NewXrayTrafficJob())
 
 	// 每 30 秒检查一次 inbound 流量超出和到期的情况
 	s.cron.AddJob("@every 30s", job.NewCheckInboundJob())
-	// 每一天提示一次流量情况,上海时间8点30
-	var entry cron.EntryID
-	isTgbotenabled, err := s.settingService.GetTgbotenabled()
-	if (err == nil) && (isTgbotenabled) {
-		runtime, err := s.settingService.GetTgbotRuntime()
-		if err != nil || runtime == "" {
-			logger.Errorf("Add NewStatsNotifyJob error[%s],Runtime[%s] invalid,wil run default", err, runtime)
-			runtime = "@daily"
-		}
-		logger.Infof("Tg notify enabled,run at %s", runtime)
-		entry, err = s.cron.AddJob(runtime, job.NewStatsNotifyJob())
-		if err != nil {
-			logger.Warning("Add NewStatsNotifyJob error", err)
-			return
-		}
-	} else {
-		s.cron.Remove(entry)
-	}
 }
 
 func (s *Server) Start() (err error) {
@@ -323,11 +274,9 @@ func (s *Server) Start() (err error) {
 		}
 	}()
 
-	loc, err := s.settingService.GetTimeLocation()
-	if err != nil {
-		return err
-	}
-	s.cron = cron.New(cron.WithLocation(loc), cron.WithSeconds())
+	// 定时任务（含月度清零）统一按上海时区触发，与业务内的月份推算保持一致，
+	// 不依赖服务器系统时区。
+	s.cron = cron.New(cron.WithLocation(common.ShanghaiLocation), cron.WithSeconds())
 	s.cron.Start()
 
 	engine, err := s.initRouter()
@@ -398,7 +347,12 @@ func (s *Server) Stop() error {
 	var err1 error
 	var err2 error
 	if s.httpServer != nil {
-		err1 = s.httpServer.Shutdown(s.ctx)
+		// s.ctx 已被 s.cancel() 取消，不能用作 Shutdown 的宽限上下文，
+		// 否则会立即中断在途请求。这里用一个独立的超时上下文，给
+		// 正在处理的请求留出有限宽限时间完成（优雅关闭）。
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err1 = s.httpServer.Shutdown(ctx)
 	}
 	if s.listener != nil {
 		err2 = s.listener.Close()

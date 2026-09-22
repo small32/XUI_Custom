@@ -136,6 +136,20 @@ func (s *InboundService) CheckInboundCredential(port int, password string) *mode
 	return inbound
 }
 
+// GetInboundPassword 按入站 id 取其当前密码，用于受限登录会话内脱敏回显。
+// 受限请求不依赖客户端会话中的密码快照（方案避免把入站密码写进 Cookie）。
+func (s *InboundService) GetInboundPassword(id int) (string, bool) {
+	inbound, err := s.GetInbound(id)
+	if err != nil || inbound == nil {
+		return "", false
+	}
+	password := inboundPassword(inbound)
+	if password == "" {
+		return "", false
+	}
+	return password, true
+}
+
 // inboundPassword 按协议从入站 settings 中取"密码"，口径与面板详细信息弹窗一致
 func inboundPassword(inbound *model.Inbound) string {
 	var settings map[string]interface{}
@@ -190,7 +204,14 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 	// 流量由 AddTraffic 独立累加，编辑操作应保持已有用量不变。
 	oldInbound.Total = inbound.Total
 	oldInbound.Remark = inbound.Remark
+	// 编辑界面对 enable 的改动是管理员手动操作：禁用记为 "manual"（避免随月初
+	// 恢复被误复活），启用则清除之前的停用来源。
 	oldInbound.Enable = inbound.Enable
+	if inbound.Enable {
+		oldInbound.DisabledBy = ""
+	} else {
+		oldInbound.DisabledBy = "manual"
+	}
 	oldInbound.ExpiryTime = inbound.ExpiryTime
 	oldInbound.MonthlyReset = inbound.MonthlyReset
 	oldInbound.Listen = inbound.Listen
@@ -203,6 +224,16 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 
 	db := database.GetDB()
 	return db.Save(oldInbound).Error
+}
+
+// ResetTraffic 将指定入站的 up/down 清零，用于"重置流量"。
+// 独立于 UpdateInbound：编辑入站时不应覆盖已累加的流量，
+// 而重置是一个显式清零动作，走独立的写库路径。
+func (s *InboundService) ResetTraffic(id int) error {
+	return database.GetDB().Model(&model.Inbound{}).
+		Where("id = ?", id).
+		UpdateColumns(map[string]interface{}{"up": 0, "down": 0}).
+		Error
 }
 
 func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
@@ -268,16 +299,31 @@ func (s *InboundService) DisableInvalidInbounds() (int64, error) {
 	if err = db.Where("enable = ?", true).Find(&enabled).Error; err != nil {
 		return 0, err
 	}
-	ids := make([]int, 0)
+	var expireIds, limitIds []int
 	for i := range enabled {
 		in := &enabled[i]
-		if expiredAt(in, now) || (setting.AutoDisable && TrafficOverlimit(in.Up+in.Down, remoteUsed[in.Port], in.Total)) {
-			ids = append(ids, in.Id)
+		if expiredAt(in, now) {
+			expireIds = append(expireIds, in.Id)
+		} else if setting.AutoDisable && TrafficOverlimit(in.Up+in.Down, remoteUsed[in.Port], in.Total) {
+			limitIds = append(limitIds, in.Id)
 		}
 	}
-	if len(ids) == 0 {
+	if len(expireIds) == 0 && len(limitIds) == 0 {
 		return 0, nil
 	}
-	result := db.Model(model.Inbound{}).Where("id in ?", ids).Update("enable", false)
-	return result.RowsAffected, result.Error
+	// 记录停用来源：过期记为 "expired"，超限记为 "limit"。
+	// 月初恢复只认 "limit"，避免把管理员手动停用的账号误恢复。
+	if len(expireIds) > 0 {
+		if err := db.Model(model.Inbound{}).Where("id in ?", expireIds).
+			Updates(map[string]interface{}{"enable": false, "disabled_by": "expired"}).Error; err != nil {
+			return 0, err
+		}
+	}
+	if len(limitIds) > 0 {
+		if err := db.Model(model.Inbound{}).Where("id in ?", limitIds).
+			Updates(map[string]interface{}{"enable": false, "disabled_by": "limit"}).Error; err != nil {
+			return 0, err
+		}
+	}
+	return int64(len(expireIds) + len(limitIds)), nil
 }

@@ -65,7 +65,10 @@ func (a *SettingController) updateUser(c *gin.Context) {
 		return
 	}
 	user := session.GetLoginUser(c)
-	if user.Username != form.OldUsername || user.Password != form.OldPassword {
+	// 会话里不保存密码（安全考虑），旧密码校验必须对数据库进行，
+	// 不能用会话中的 user.Password（恒为空）。
+	if a.userService.CheckUser(form.OldUsername, form.OldPassword) == nil ||
+		user.Username != form.OldUsername {
 		jsonMsg(c, "修改用户", errors.New("原用户名或原密码错误"))
 		return
 	}

@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"sync"
+
 	"github.com/gin-gonic/gin"
 	"time"
 	"x-ui/web/global"
@@ -12,11 +14,13 @@ type ServerController struct {
 
 	serverService service.ServerService
 
-	lastStatus        *service.Status
-	lastGetStatusTime time.Time
-
-	lastVersions        []string
-	lastGetVersionsTime time.Time
+	// 以下缓存字段被 cron goroutine（refreshStatus）与 HTTP handler 并发读写，
+	// 用 mu 串行化访问，避免数据竞争。
+	mu                    sync.RWMutex
+	lastStatus            *service.Status
+	lastGetStatusTime     time.Time
+	lastVersions          []string
+	lastGetVersionsTime   time.Time
 }
 
 func NewServerController(g *gin.RouterGroup) *ServerController {
@@ -31,22 +35,30 @@ func NewServerController(g *gin.RouterGroup) *ServerController {
 func (a *ServerController) initRouter(g *gin.RouterGroup) {
 	g = g.Group("/server")
 
-	g.Use(a.checkLogin)
+	// /server 下的接口属管理面，仅允许管理员访问。
+	// 受限登录不建立用户会话，会被 checkAdminLogin 拦下，杜绝越权。
+	g.Use(a.checkAdminLogin)
 	g.POST("/status", a.status)
 	g.POST("/getXrayVersion", a.getXrayVersion)
 	g.POST("/installXray/:version", a.installXray)
 }
 
 func (a *ServerController) refreshStatus() {
-	a.lastStatus = a.serverService.GetStatus(a.lastStatus)
+	a.mu.Lock()
+	status := a.serverService.GetStatus(a.lastStatus)
+	a.lastStatus = status
+	a.mu.Unlock()
 }
 
 func (a *ServerController) startTask() {
 	webServer := global.GetWebServer()
 	c := webServer.GetCron()
 	c.AddFunc("@every 2s", func() {
+		a.mu.RLock()
+		last := a.lastGetStatusTime
+		a.mu.RUnlock()
 		now := time.Now()
-		if now.Sub(a.lastGetStatusTime) > time.Minute*3 {
+		if now.Sub(last) > time.Minute*3 {
 			return
 		}
 		a.refreshStatus()
@@ -54,15 +66,23 @@ func (a *ServerController) startTask() {
 }
 
 func (a *ServerController) status(c *gin.Context) {
+	a.mu.Lock()
 	a.lastGetStatusTime = time.Now()
+	status := a.lastStatus
+	a.mu.Unlock()
 
-	jsonObj(c, a.lastStatus, nil)
+	jsonObj(c, status, nil)
 }
 
 func (a *ServerController) getXrayVersion(c *gin.Context) {
 	now := time.Now()
-	if now.Sub(a.lastGetVersionsTime) <= time.Minute {
-		jsonObj(c, a.lastVersions, nil)
+
+	a.mu.RLock()
+	lastTime := a.lastGetVersionsTime
+	cached := a.lastVersions
+	a.mu.RUnlock()
+	if now.Sub(lastTime) <= time.Minute {
+		jsonObj(c, cached, nil)
 		return
 	}
 
@@ -72,8 +92,10 @@ func (a *ServerController) getXrayVersion(c *gin.Context) {
 		return
 	}
 
+	a.mu.Lock()
 	a.lastVersions = versions
 	a.lastGetVersionsTime = time.Now()
+	a.mu.Unlock()
 
 	jsonObj(c, versions, nil)
 }

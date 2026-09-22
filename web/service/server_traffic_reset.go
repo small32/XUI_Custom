@@ -12,6 +12,7 @@ import (
 	"time"
 	"x-ui/database"
 	"x-ui/database/model"
+	"x-ui/util/common"
 	"x-ui/web/entity"
 )
 
@@ -59,7 +60,13 @@ func YyyymmPeriod(yyyymm int) string {
 // 只清 up/down，保留 total 流量上限，因此流量上限会随自然月滚动。
 // 幂等：进度记录在 settings 表，重复调用或服务重启都不会重复清零。
 func (s *ServerManagementService) MaybeMonthlyReset() error {
-	return s.maybeMonthlyResetAt(time.Now())
+	// 统一按上海时区计算"当前月份"：cron 也以东八区触发，
+	// 保证触发判定与这里面的月份推算使用同一时区，避免系统时区不同导致错位。
+	return s.maybeMonthlyResetAt(nowCN())
+}
+
+func nowCN() time.Time {
+	return time.Now().In(common.ShanghaiLocation)
 }
 
 func (s *ServerManagementService) maybeMonthlyResetAt(now time.Time) error {
@@ -266,7 +273,10 @@ func (s *ServerManagementService) snapshotAndResetLocal(st *trafficResetState, y
 			if err = saveTrafficSnapshot(tx, snap); err != nil {
 				return err
 			}
-			if !in.Enable && !expiredAt(&in, nowMs) &&
+			// 只恢复因超限被自动停用的账号（DisabledBy=="limit"），
+			// 且未过期。管理员手动停用的账号（DisabledBy=="manual"）即使用量恰好
+			// 超限也不在这里恢复，避免月初误复活。
+			if in.DisabledBy == "limit" && !expiredAt(&in, nowMs) &&
 				TrafficOverlimit(in.Up+in.Down, snap.RemoteUp+snap.RemoteDown, in.Total) {
 				reactivatePorts = append(reactivatePorts, in.Port)
 			}
@@ -278,9 +288,10 @@ func (s *ServerManagementService) snapshotAndResetLocal(st *trafficResetState, y
 				return err
 			}
 		}
-		// 新月份从零开始计数，上个月因超限停用的按月账号随之恢复启用。
+		// 新月份从零开始计数，上个月因超限停用的按月账号随之恢复启用，并清除停用来源。
 		if len(reactivatePorts) > 0 {
-			result := tx.Model(&model.Inbound{}).Where("port in ? AND enable = ?", reactivatePorts, false).Update("enable", true)
+			result := tx.Model(&model.Inbound{}).Where("port in ? AND enable = ?", reactivatePorts, false).
+				Updates(map[string]interface{}{"enable": true, "disabled_by": ""})
 			if result.Error != nil {
 				return result.Error
 			}

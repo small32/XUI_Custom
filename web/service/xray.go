@@ -117,7 +117,9 @@ func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, error) {
 	if !running {
 		return nil, errors.New("xray is not running")
 	}
-	return proc.GetTraffic(true)
+	// 读累计值且不重置 xray 计数器。清零由 XrayTrafficJob 在成功落库后推进基线完成，
+	// 避免"先清零、写库失败"导致该间隔流量永久丢失。
+	return proc.GetTraffic(false)
 }
 
 func (s *XrayService) RestartXray(isForce bool) error {

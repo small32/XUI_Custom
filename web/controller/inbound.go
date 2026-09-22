@@ -31,6 +31,7 @@ func (a *InboundController) initRouter(g *gin.RouterGroup) {
 	g.POST("/list", a.getInbounds)
 	g.POST("/add", a.addInbound)
 	g.POST("/del/:id", a.delInbound)
+	g.POST("/resetTraffic/:id", a.resetTrafficInbound)
 	g.POST("/update/:id", a.updateInbound)
 	g.POST("/subscription", a.restrictedSubscription)
 }
@@ -51,14 +52,14 @@ func (a *InboundController) startTask() {
 func (a *InboundController) getInbounds(c *gin.Context) {
 	// 受限登录仅返回绑定的那一条入站
 	if inboundId := session.GetLoginInboundId(c); inboundId > 0 {
-		password, ok := session.GetLoginPassword(c)
-		if !ok {
-			pureJsonMsg(c, false, "登录信息已过期，请退出后重新登录")
-			return
-		}
 		inbound, err := a.inboundService.GetInbound(inboundId)
 		if err != nil {
 			jsonMsg(c, "获取", err)
+			return
+		}
+		password, ok := a.inboundService.GetInboundPassword(inboundId)
+		if !ok || !session.IsRestrictedCredValid(c, inboundId, password) {
+			pureJsonMsg(c, false, "登录信息已过期，请退出后重新登录")
 			return
 		}
 		inbound.Settings, err = service.WithLoginPassword(inbound.Protocol, inbound.Settings, password)
@@ -81,11 +82,6 @@ func (a *InboundController) getInbounds(c *gin.Context) {
 // restrictedSubscription 受限登录账号获取"生成订阅"所需的只读数据，
 // 替代仅管理员可用的 /xui/setting/all 与 /xui/server/inbound/:port。
 func (a *InboundController) restrictedSubscription(c *gin.Context) {
-	password, ok := session.GetLoginPassword(c)
-	if !ok {
-		pureJsonMsg(c, false, "登录信息已过期，请退出后重新登录")
-		return
-	}
 	inboundId := session.GetLoginInboundId(c)
 	if inboundId <= 0 {
 		pureJsonMsg(c, false, "无权访问")
@@ -94,6 +90,11 @@ func (a *InboundController) restrictedSubscription(c *gin.Context) {
 	inbound, err := a.inboundService.GetInbound(inboundId)
 	if err != nil {
 		jsonMsg(c, "获取", err)
+		return
+	}
+	password, ok := a.inboundService.GetInboundPassword(inboundId)
+	if !ok || !session.IsRestrictedCredValid(c, inboundId, password) {
+		pureJsonMsg(c, false, "登录信息已过期，请退出后重新登录")
 		return
 	}
 	serverName := ""
@@ -140,7 +141,7 @@ func (a *InboundController) addInbound(c *gin.Context) {
 	}
 	err = a.inboundService.AddInbound(inbound)
 	if err == nil {
-		if syncErr := a.serverService.SyncInbound(inbound, true); syncErr != nil {
+		if syncErr := a.serverService.SyncInbound(inbound, 0, true); syncErr != nil {
 			logger.Warning("第三方账号同步失败: ", syncErr)
 			err = fmt.Errorf("本地账号已创建，但第三方同步失败: %w", syncErr)
 		}
@@ -173,6 +174,16 @@ func (a *InboundController) delInbound(c *gin.Context) {
 	jsonMsg(c, "删除", err)
 }
 
+func (a *InboundController) resetTrafficInbound(c *gin.Context) {
+	id, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		jsonMsg(c, "重置流量", err)
+		return
+	}
+	err = a.inboundService.ResetTraffic(id)
+	jsonMsg(c, "重置流量", err)
+}
+
 func (a *InboundController) updateInbound(c *gin.Context) {
 	id, err := strconv.Atoi(c.Param("id"))
 	if err != nil {
@@ -191,9 +202,14 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		jsonMsg(c, "修改", err)
 		return
 	}
+	// 端口变更需要把远端旧端口账号一并迁移，同步前先取旧端口。
+	oldPort := 0
+	if old, getErr := a.inboundService.GetInbound(id); getErr == nil {
+		oldPort = old.Port
+	}
 	err = a.inboundService.UpdateInbound(inbound)
 	if err == nil {
-		if syncErr := a.serverService.SyncInbound(inbound, false); syncErr != nil {
+		if syncErr := a.serverService.SyncInbound(inbound, oldPort, false); syncErr != nil {
 			logger.Warning("第三方账号同步失败: ", syncErr)
 			err = fmt.Errorf("本地账号已修改，但第三方同步失败: %w", syncErr)
 		}

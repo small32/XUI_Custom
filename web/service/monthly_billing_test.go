@@ -106,15 +106,16 @@ func TestTrafficResetOnlyAffectsMonthlyInbounds(t *testing.T) {
 		monthly bool
 		up      int64
 		enable  bool
+		disabledBy string
 		remark  string
 	}{
-		{9501, true, 1500, false, "按月：已超限被停用"},
-		{9502, false, 1500, false, "累计：已超限被停用"},
-		{9503, false, 400, true, "累计：在用"},
+		{9501, true, 1500, false, "limit", "按月：已超限被停用"},
+		{9502, false, 1500, false, "limit", "累计：已超限被停用"},
+		{9503, false, 400, true, "", "累计：在用"},
 	}
 	for _, v := range seeds {
 		in := &model.Inbound{
-			MonthlyReset: v.monthly, Port: v.port, Up: v.up, Total: total, Enable: v.enable,
+			MonthlyReset: v.monthly, Port: v.port, Up: v.up, Total: total, Enable: v.enable, DisabledBy: v.disabledBy,
 			Tag: fmt.Sprintf("inbound-%d", v.port), Remark: v.remark,
 		}
 		if err := db.Create(in).Error; err != nil {

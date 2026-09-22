@@ -111,3 +111,41 @@ func TestSyncInboundVisibility(t *testing.T) {
 	}
 
 }
+
+// 改端口后，远端旧端口账号不能被残留：syncInboundSQLWithOldPort 应删除旧端口，
+// 并在新端口写入账号，避免孤儿账号继续可用。
+func TestSyncInboundMovesPortRemovesOrphan(t *testing.T) {
+	if _, err := exec.LookPath("sqlite3"); err != nil {
+		t.Skip("sqlite3 required")
+	}
+	db := filepath.Join(t.TempDir(), "remote.db")
+	run := func(sql string) (string, error) {
+		c := exec.Command("sqlite3", "-bail", db)
+		c.Stdin = strings.NewReader(sql)
+		b, e := c.CombinedOutput()
+		return strings.TrimSpace(string(b)), e
+	}
+	if out, err := run(`CREATE TABLE users(id INTEGER PRIMARY KEY); INSERT INTO users VALUES(7); CREATE TABLE inbounds(user_id INTEGER,port INTEGER UNIQUE,protocol TEXT,settings TEXT,stream_settings TEXT,tag TEXT UNIQUE,sniffing TEXT,remark TEXT,listen TEXT,enable INTEGER,expiry_time INTEGER,total INTEGER,up INTEGER,down INTEGER);`); err != nil {
+		t.Fatal(out, err)
+	}
+	in := &model.Inbound{Port: 12000, Protocol: model.Trojan, Settings: `{"password":"a"}`, Enable: true}
+	if out, err := run(syncInboundSQL(in, true)); err != nil {
+		t.Fatal(out, err)
+	}
+
+	// 改端口：旧 12000 → 新 12001，必须迁移而非新增残留。
+	in.Port = 12001
+	if out, err := run(syncInboundSQLWithOldPort(in, 12000)); err != nil {
+		t.Fatal(out, err)
+	}
+	// 新端口存在。
+	out, err := run("SELECT count(*) FROM inbounds WHERE port=12001;")
+	if err != nil || out != "1" {
+		t.Fatalf("new port not written: %q %v", out, err)
+	}
+	// 旧端口不复存在（孤儿被清除）。
+	out, err = run("SELECT count(*) FROM inbounds WHERE port=12000;")
+	if err != nil || out != "0" {
+		t.Fatalf("old port orphan still present: %q %v", out, err)
+	}
+}

@@ -362,10 +362,7 @@
                     okText: '重置',
                     cancelText: '取消',
                     onOk: () => {
-                        const inbound = dbInbound.toInbound();
-                        dbInbound.up = 0;
-                        dbInbound.down = 0;
-                        this.updateInbound(inbound, dbInbound);
+                        this.submit(`/xui/inbound/resetTraffic/${dbInbound.id}`);
                     },
                 });
             },
@@ -486,10 +483,10 @@
     });
 
 </script>
-{{template "inboundModal"}}
-{{template "promptModal"}}
-{{template "qrcodeModal"}}
-{{template "textModal"}}
-{{template "inboundInfoModal"}}
+{{template "inboundModal" $}}
+{{template "promptModal" $}}
+{{template "qrcodeModal" $}}
+{{template "textModal" $}}
+{{template "inboundInfoModal" $}}
 </body>
 </html>

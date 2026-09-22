@@ -38,6 +38,10 @@ type Inbound struct {
 	// 不勾选则用量一直累计、不做月度清零，流量用完即止（Total 为 0 时同样不限量）。
 	MonthlyReset bool `json:"monthlyReset" form:"monthlyReset" gorm:"column:monthly_reset"`
 
+	// DisabledBy 记录入站为何被停用，用于区分"因超限/过期被自动停用"与"管理员手动停用"。
+	// 取值约定：""（未停用或旧数据）、"limit"（超限自动停用）、"expired"（过期自动停用）、"manual"（管理员手动停用）。
+	DisabledBy string `json:"-" gorm:"column:disabled_by;default:''"`
+
 	// config part
 	Listen         string   `json:"listen" form:"listen"`
 	Port           int      `json:"port" form:"port" gorm:"unique"`

@@ -176,25 +176,26 @@ func TestMonthlyResetReactivatesOverlimitAccounts(t *testing.T) {
 	// 清零发生在 2026-10-01，这个到期时间已经过去。
 	expired := time.Date(2026, 9, 1, 0, 0, 0, 0, time.Local).Unix() * 1000
 	seeds := []struct {
-		port   int
-		up     int64
-		enable bool
-		expiry int64
-		want   bool
-		why    string
+		port       int
+		up         int64
+		enable     bool
+		expiry     int64
+		disabledBy string
+		want       bool
+		why        string
 	}{
-		{9301, 1500, false, 0, true, "本地已超限，上月被自动停用"},
-		{9302, 100, false, 0, false, "管理员手动停用，未超限"},
-		{9303, 1500, false, expired, false, "已到期，不能因超限被放出来"},
-		{9304, 1500, true, 0, true, "本来就处于启用状态"},
-		{9305, 0, false, 0, false, "零用量，未超限"},
-		{9306, 500, false, 0, true, "本地没超，远程补足到上限"},
-		{9307, 500, true, 0, true, "远程补足超限，但仍启用着"},
+		{9301, 1500, false, 0, "limit", true, "本地已超限，上月被自动停用"},
+		{9302, 100, false, 0, "manual", false, "管理员手动停用，未超限"},
+		{9303, 1500, false, expired, "limit", false, "已到期，不能因超限被放出来"},
+		{9304, 1500, true, 0, "", true, "本来就处于启用状态"},
+		{9305, 0, false, 0, "manual", false, "零用量，未超限"},
+		{9306, 500, false, 0, "limit", true, "本地没超，远程补足到上限"},
+		{9307, 500, true, 0, "", true, "远程补足超限，但仍启用着"},
 	}
 	for _, v := range seeds {
 		in := &model.Inbound{
 			MonthlyReset: true,
-			Port:         v.port, Up: v.up, Total: total, Enable: v.enable, ExpiryTime: v.expiry,
+			Port:         v.port, Up: v.up, Total: total, Enable: v.enable, ExpiryTime: v.expiry, DisabledBy: v.disabledBy,
 			Tag: fmt.Sprintf("inbound-%d", v.port), Remark: fmt.Sprintf("客户%d", v.port),
 		}
 		if err := db.Create(in).Error; err != nil {
@@ -268,11 +269,11 @@ func TestResetStatePersistsReactivatePorts(t *testing.T) {
 	}
 	s := &ServerManagementService{}
 	db := database.GetDB()
-	if err := db.Create(&model.Inbound{MonthlyReset: true, Port: 9401, Up: 2000, Total: 1000, Enable: false, Tag: "inbound-9401"}).Error; err != nil {
+	if err := db.Create(&model.Inbound{MonthlyReset: true, Port: 9401, Up: 2000, Total: 1000, Enable: false, DisabledBy: "limit", Tag: "inbound-9401"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	// 手动停用的账号不能被记进待启用名单。
-	if err := db.Create(&model.Inbound{MonthlyReset: true, Port: 9402, Up: 10, Total: 1000, Enable: false, Tag: "inbound-9402"}).Error; err != nil {
+	if err := db.Create(&model.Inbound{MonthlyReset: true, Port: 9402, Up: 10, Total: 1000, Enable: false, DisabledBy: "manual", Tag: "inbound-9402"}).Error; err != nil {
 		t.Fatal(err)
 	}
 	// 先登记首次运行（只存进度，不清零），再跨月触发真正的清零。

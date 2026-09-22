@@ -17,12 +17,15 @@ import (
 	"x-ui/logger"
 )
 
-func (s *ServerManagementService) SyncInbound(inbound *model.Inbound, create bool) error {
-	return s.syncInbound(inbound, create, false)
+// SyncInbound 把入站同步到远端。create 为真时插入新账号；否则更新已有账号。
+// oldPort 用于端口变更时的同步：改端口后必须把远端旧端口账号一并迁移/删除，
+// 否则旧端口账号会残留并继续可用。新增或端口未变时传入 0 或当前端口即可。
+func (s *ServerManagementService) SyncInbound(inbound *model.Inbound, oldPort int, create bool) error {
+	return s.syncInbound(inbound, oldPort, create, false)
 }
 
 func (s *ServerManagementService) DeleteSyncedInbound(inbound *model.Inbound) error {
-	err := s.syncInbound(inbound, false, true)
+	err := s.syncInbound(inbound, 0, false, true)
 	if err != nil {
 		// 同步删除失败，记录端口到待处理队列，提示管理员手动处理
 		if addErr := s.AddPendingDelete(inbound.Port); addErr != nil {
@@ -35,7 +38,7 @@ func (s *ServerManagementService) DeleteSyncedInbound(inbound *model.Inbound) er
 	return nil
 }
 
-func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, remove bool) error {
+func (s *ServerManagementService) syncInbound(inbound *model.Inbound, oldPort int, create, remove bool) error {
 	v, err := s.GetSetting()
 	if err != nil {
 		return err
@@ -64,6 +67,10 @@ func (s *ServerManagementService) syncInbound(inbound *model.Inbound, create, re
 	}
 	defer sess.Close()
 	sql := syncInboundSQL(inbound, create, v.SyncStrategy == "full")
+	// 端口变更：远端旧端口账号必须一并迁移，否则残留可用账号成为孤儿。
+	if oldPort > 0 && oldPort != inbound.Port {
+		sql = syncInboundSQLWithOldPort(inbound, oldPort)
+	}
 	if remove {
 		sql = deleteSyncedInboundSQL(inbound.Port)
 	}
@@ -144,6 +151,18 @@ COMMIT;
 
 func deleteSyncedInboundSQL(port int) string {
 	return fmt.Sprintf(".timeout 10000\nBEGIN IMMEDIATE;\nDELETE FROM inbounds WHERE port=%d;\nSELECT changes();\nCOMMIT;\n", port)
+}
+
+// syncInboundSQLWithOldPort 处理端口变更的远程同步：先把旧端口账号删除，
+// 再用 upsert 写入新端口账号，从而把账号从旧端口"迁移"到新端口。
+// 否则远端会残留旧端口账号继续可用，成为孤儿账号。
+func syncInboundSQLWithOldPort(inbound *model.Inbound, oldPort int) string {
+	// deleteSeq 删除旧端口残留账号（若不存在则命中 0 行，无害）。
+	deleteSeq := deleteSyncedInboundSQL(oldPort)
+	// insertSeq 用 upsert 形态写入新端口：新端口不存在则创建，已存在则按新配置覆盖。
+	// 强制走 create/upsert 分支，避免 update 分支因新端口不存在而被 guard 跳过。
+	insertSeq := syncInboundSQL(inbound, false, true)
+	return deleteSeq + insertSeq
 }
 
 func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{}, error) {
@@ -354,6 +373,13 @@ func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
 func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
 	serverStateMu.Lock()
 	defer serverStateMu.Unlock()
+	return s.saveSettingLocked(v)
+}
+
+// saveSettingLocked 保存服务器设置，调用方必须已持有 serverStateMu。
+// 内部校验与落库逻辑与 SaveSetting 一致，供需要复用已持锁上下文的内部方法使用，
+// 避免在同一 goroutine 中对不可重入的 serverStateMu 二次加锁造成死锁。
+func (s *ServerManagementService) saveSettingLocked(v *entity.ServerSetting) error {
 	if v.SyncStrategy == "" {
 		v.SyncStrategy = "normal"
 	}
@@ -430,7 +456,7 @@ func (s *ServerManagementService) AddPendingDelete(port int) error {
 		}
 	}
 	v.PendingDeletes = append(v.PendingDeletes, port)
-	return s.SaveSetting(v)
+	return s.saveSettingLocked(v)
 }
 
 // ClearPendingDelete 从待删除队列中移除指定端口。
@@ -449,7 +475,7 @@ func (s *ServerManagementService) ClearPendingDelete(port int) {
 	}
 	if len(filtered) != len(v.PendingDeletes) {
 		v.PendingDeletes = filtered
-		s.SaveSetting(v)
+		s.saveSettingLocked(v)
 	}
 }
 
@@ -463,19 +489,28 @@ func (s *ServerManagementService) GetPendingDeletes() []int {
 }
 
 func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
+	// 只锁内读取状态快照（st、v），随即可释放锁；
+	// SSH 拨号与读取远程流量的长网络 IO 移到锁外执行，
+	// 否则单次可阻塞 serverStateMu 数十秒，拖垮删除/心跳/清零等所有依赖该锁的操作。
 	serverStateMu.Lock()
-	defer serverStateMu.Unlock()
 	st, err := s.getTrafficResetState()
 	if err != nil {
+		serverStateMu.Unlock()
 		return nil, err
 	}
 	v, err := s.GetSetting()
+	serverStateMu.Unlock()
 	if err != nil {
 		return nil, err
 	}
 	if v.Host == "" || v.Password == "" {
 		return nil, fmt.Errorf("请先配置第三方服务器及SSH密码")
 	}
+	if st.PendingMonth != 0 && st.LocalDone && !st.RemoteDone {
+		return nil, fmt.Errorf("月度远程清零尚未完成，等待重试")
+	}
+
+	// ---- 以下为锁外的 SSH 网络 IO：拨号、reload、读取远程流量 ----
 	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
 	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
@@ -491,9 +526,6 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 	if err != nil {
 		return nil, fmt.Errorf("重试远程账号配置重启失败: %w", err)
 	}
-	if st.PendingMonth != 0 && st.LocalDone && !st.RemoteDone {
-		return nil, fmt.Errorf("月度远程清零尚未完成，等待重试")
-	}
 
 	sess, err := client.NewSession()
 	if err != nil {
@@ -508,6 +540,10 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// ---- 本地状态修改与写回重新加锁，与 DisableInvalidInbounds 等互斥 ----
+	serverStateMu.Lock()
+	defer serverStateMu.Unlock()
 	if v.AutoDisable {
 		var localInbounds []model.Inbound
 		if err := database.GetDB().Find(&localInbounds).Error; err != nil {
@@ -599,7 +635,8 @@ func parseRemoteTraffic(out []byte) ([]*entity.ServerTraffic, error) {
 }
 
 func (s *ServerManagementService) disableLocal(port int) (bool, error) {
-	result := database.GetDB().Model(&model.Inbound{}).Where("port = ? AND enable = ?", port, true).Update("enable", false)
+	result := database.GetDB().Model(&model.Inbound{}).Where("port = ? AND enable = ?", port, true).
+		Updates(map[string]interface{}{"enable": false, "disabled_by": "limit"})
 	return result.RowsAffected > 0, result.Error
 }
 
