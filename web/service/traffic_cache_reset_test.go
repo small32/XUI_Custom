@@ -60,3 +60,24 @@ func TestResetPortTrafficCacheEmptyCache(t *testing.T) {
 		t.Fatalf("空缓存清理后应仍为空，实际: %+v", cache)
 	}
 }
+
+func TestResetPortsTrafficCacheRemovesAllMovedPortEntries(t *testing.T) {
+	forceHeartbeat = func() {}
+	if err := database.InitDB(filepath.Join(t.TempDir(), "cache-reset-multiple.db")); err != nil {
+		t.Fatal(err)
+	}
+	s := &ServerManagementService{}
+	if err := s.SaveTrafficCache([]*entity.ServerTraffic{
+		{Port: 1001, Used: 10}, {Port: 1002, Used: 20}, {Port: 1003, Used: 30},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.ResetPortsTrafficCache(1001, 1003)
+	cache, err := s.GetTrafficCache()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cache) != 1 || cache[0].Port != 1002 {
+		t.Fatalf("old and new port cache entries should both be reset: %+v", cache)
+	}
+}

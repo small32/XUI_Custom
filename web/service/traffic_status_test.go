@@ -314,7 +314,7 @@ func TestRemoteMonthlyResetSQL(t *testing.T) {
 		t.Fatalf("启用语句必须排在清零之前:\n%s", sql)
 	}
 	for _, want := range []string{
-		"SET enable=1 WHERE EXISTS (SELECT 1 FROM reset_guard) AND enable=0 AND (expiry_time=0 OR expiry_time>" + strconv.FormatInt(now.Unix()*1000, 10) + ") AND port IN (9301,9306)",
+		"SET enable=1,disabled_by='' WHERE EXISTS (SELECT 1 FROM reset_guard) AND enable=0 AND disabled_by='limit' AND (expiry_time=0 OR expiry_time>" + strconv.FormatInt(now.Unix()*1000, 10) + ") AND port IN (9301,9306)",
 		"SET up=0, down=0 WHERE port IN (9001,9301,9306)",
 		"BEGIN IMMEDIATE",
 		"COMMIT",

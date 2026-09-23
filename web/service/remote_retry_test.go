@@ -16,7 +16,7 @@ func TestRemoteDisableMarkerFailureRollsBack(t *testing.T) {
 		t.Skip("sqlite3 required")
 	}
 	path := filepath.Join(t.TempDir(), "remote.db")
-	setup := "CREATE TABLE inbounds(port INTEGER,enable INTEGER); INSERT INTO inbounds VALUES(1234,1); CREATE TABLE settings(key TEXT,value TEXT); CREATE TRIGGER fail_marker BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT,'marker failed'); END;"
+	setup := "CREATE TABLE inbounds(port INTEGER,enable INTEGER,disabled_by TEXT); INSERT INTO inbounds VALUES(1234,1,''); CREATE TABLE settings(key TEXT,value TEXT); CREATE TRIGGER fail_marker BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT,'marker failed'); END;"
 	if out, err := exec.Command("sqlite3", path, setup).CombinedOutput(); err != nil {
 		t.Fatalf("%s: %v", out, err)
 	}

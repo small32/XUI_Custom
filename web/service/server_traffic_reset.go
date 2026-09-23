@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 	"strconv"
@@ -112,7 +111,7 @@ func (s *ServerManagementService) maybeMonthlyResetAt(now time.Time) error {
 		if e != nil {
 			return e
 		}
-		if (st.RemoteIdentity != "" && st.RemoteIdentity != remoteIdentity(v)) || v.Host == "" || v.Password == "" {
+		if (st.RemoteIdentity != "" && st.RemoteIdentity != remoteIdentity(v)) || v.Host == "" {
 			// 未配置远程服务器时视为已完成，不影响本地清零的确认。
 			st.RemoteDone = true
 		} else if len(st.MonthlyPorts) == 0 && len(st.ReactivatePorts) == 0 {
@@ -373,7 +372,10 @@ func readAllTrafficSnapshots(tx *gorm.DB, inboundId int) ([]*model.TrafficSnapsh
 // resetRemoteTraffic 通过 SSH 清零第三方面板里指定端口的已用流量，并恢复月初应启用的端口。
 // 仅清零流量不需重启；恢复启用后需要重新加载远程运行配置。
 func (s *ServerManagementService) resetRemoteTraffic(v *entity.ServerSetting, monthlyPorts, reactivatePorts []int, now time.Time) error {
-	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
+	cfg, err := remoteSSHClientConfig(v)
+	if err != nil {
+		return err
+	}
 	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return fmt.Errorf("SSH连接失败: %w", err)
@@ -415,7 +417,7 @@ func remoteMonthlyResetSQL(monthlyPorts, reactivatePorts []int, now time.Time) s
 	b.WriteString(fmt.Sprintf("CREATE TEMP TABLE reset_guard AS SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM settings WHERE key='remoteMonthlyResetApplied' AND value='%d');\n", TrafficYyyymm(now)))
 	if ports := validPortList(reactivatePorts); len(ports) > 0 {
 		b.WriteString(fmt.Sprintf(
-			"UPDATE inbounds SET enable=1 WHERE EXISTS (SELECT 1 FROM reset_guard) AND enable=0 AND (expiry_time=0 OR expiry_time>%d) AND port IN (%s);\n",
+			"UPDATE inbounds SET enable=1,disabled_by='' WHERE EXISTS (SELECT 1 FROM reset_guard) AND enable=0 AND disabled_by='limit' AND (expiry_time=0 OR expiry_time>%d) AND port IN (%s);\n",
 			now.Unix()*1000, strings.Join(ports, ",")))
 		// Persist reload intent together with the enable change, so a failed
 		// restart is retried even when the next UPDATE changes no rows.

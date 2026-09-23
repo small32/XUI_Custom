@@ -921,12 +921,6 @@ class Inbound extends XrayCommonClass {
             path = this.stream.grpc.serviceName;
         }
 
-		if (this.stream.security === 'tls') {
-			if (!ObjectUtil.isEmpty(this.stream.tls.server)) {
-				host = this.stream.tls.server;
-            }
-        }
-
         let obj = {
             v: '2',
             ps: remark,
@@ -937,6 +931,7 @@ class Inbound extends XrayCommonClass {
             net: network,
             type: type,
             host: host,
+            sni: this.stream.security === 'tls' ? this.stream.tls.server : '',
             path: path,
             tls: this.stream.security,
         };

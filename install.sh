@@ -166,7 +166,28 @@ install_x-ui() {
     #echo -e ""
     systemctl daemon-reload
     systemctl enable x-ui
-    if ! systemctl start x-ui; then
+    start_ok=1
+    systemctl start x-ui || start_ok=0
+    # Type=simple reports success as soon as the process is spawned. Wait for
+    # the process to remain active so startup/configuration failures still roll
+    # back before the previous installation is discarded.
+    if [[ $start_ok -eq 1 ]]; then
+        start_ok=0
+        active_checks=0
+        for attempt in {1..5}; do
+            if systemctl is-active --quiet x-ui; then
+                active_checks=$((active_checks + 1))
+                if [[ $active_checks -eq 5 ]]; then
+                    start_ok=1
+                    break
+                fi
+            else
+                active_checks=0
+            fi
+            sleep 1
+        done
+    fi
+    if [[ $start_ok -ne 1 ]]; then
         echo -e "${red}新版本启动失败，正在恢复旧版本${plain}"
         rm -rf "$old_dir"
         [[ -e "$backup_dir" ]] && mv "$backup_dir" "$old_dir"

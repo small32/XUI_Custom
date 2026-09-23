@@ -11,11 +11,10 @@ import (
 )
 
 const (
-	loginUser         = "LOGIN_USER"
-	loginInboundId    = "LOGIN_INBOUND_ID"
-	loginPasswordFgp  = "LOGIN_INBOUND_PASSWORD_FINGERPRINT"
-	loginUserHash     = "LOGIN_USER_PASSWORD_HASH"
-	legacySessionMark = "legacy-session-test"
+	loginUser        = "LOGIN_USER"
+	loginInboundId   = "LOGIN_INBOUND_ID"
+	loginPasswordFgp = "LOGIN_INBOUND_PASSWORD_FINGERPRINT"
+	loginUserHash    = "LOGIN_USER_PASSWORD_HASH"
 )
 
 func init() {
@@ -28,15 +27,14 @@ func SetLoginUser(c *gin.Context, user *model.User) error {
 	if user == nil {
 		return fmt.Errorf("user cannot be nil")
 	}
+	if user.Password == "" {
+		return fmt.Errorf("user password hash cannot be empty")
+	}
 	safeUser := *user
 	safeUser.Password = ""
 	s := sessions.Default(c)
 	s.Set(loginUser, safeUser)
-	passwordHash := user.Password
-	if passwordHash == "" {
-		passwordHash = legacySessionMark
-	}
-	s.Set(loginUserHash, passwordHash)
+	s.Set(loginUserHash, user.Password)
 	// Switching to an administrator session must not retain a prior
 	// restricted-login binding.
 	s.Delete(loginInboundId)
@@ -68,9 +66,6 @@ func IsLogin(c *gin.Context) bool {
 	stored, ok := sessions.Default(c).Get(loginUserHash).(string)
 	if !ok || stored == "" {
 		return false
-	}
-	if stored == legacySessionMark {
-		return true
 	}
 	var current model.User
 	if database.GetDB() == nil || database.GetDB().Where("id = ?", u.Id).First(&current).Error != nil {

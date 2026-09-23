@@ -132,10 +132,13 @@ func TestSyncInboundMovesPortRemovesOrphan(t *testing.T) {
 	if out, err := run(syncInboundSQL(in, true)); err != nil {
 		t.Fatal(out, err)
 	}
+	if out, err := run("UPDATE inbounds SET up=900,down=200 WHERE port=12000;"); err != nil {
+		t.Fatal(out, err)
+	}
 
 	// 改端口：旧 12000 → 新 12001，必须迁移而非新增残留。
 	in.Port = 12001
-	if out, err := run(syncInboundSQLWithOldPort(in, 12000)); err != nil {
+	if out, err := run(syncInboundSQLWithOldPort(in, 12000, true)); err != nil {
 		t.Fatal(out, err)
 	}
 	// 新端口存在。
@@ -147,5 +150,32 @@ func TestSyncInboundMovesPortRemovesOrphan(t *testing.T) {
 	out, err = run("SELECT count(*) FROM inbounds WHERE port=12000;")
 	if err != nil || out != "0" {
 		t.Fatalf("old port orphan still present: %q %v", out, err)
+	}
+	if out, err = run("SELECT up,down FROM inbounds WHERE port=12001;"); err != nil || out != "900|200" {
+		t.Fatalf("port migration lost remote traffic: %q %v", out, err)
+	}
+
+	in.Port = 12002
+	if out, err = run(syncInboundSQLWithOldPort(in, 12000, false)); err != nil {
+		t.Fatalf("normal sync of missing old port should be a no-op: %q %v", out, err)
+	}
+	if out, err = run("SELECT count(*) FROM inbounds WHERE port=12002;"); err != nil || out != "0" {
+		t.Fatalf("normal sync created a missing remote port: %q %v", out, err)
+	}
+	if out, err = run(syncInboundSQLWithOldPort(in, 12000, true)); err != nil {
+		t.Fatalf("full sync should create a missing new port: %q %v", out, err)
+	}
+	if out, err = run("SELECT count(*) FROM inbounds WHERE port=12002;"); err != nil || out != "1" {
+		t.Fatalf("full sync did not create a missing remote port: %q %v", out, err)
+	}
+	if out, err = run("UPDATE inbounds SET up=70,down=30 WHERE port=12002;"); err != nil {
+		t.Fatal(out, err)
+	}
+	in.Remark = "normal updates a matching new port"
+	if out, err = run(syncInboundSQLWithOldPort(in, 12000, false)); err != nil {
+		t.Fatalf("normal sync should update an existing new port: %q %v", out, err)
+	}
+	if out, err = run("SELECT remark,up,down FROM inbounds WHERE port=12002;"); err != nil || out != "normal updates a matching new port|70|30" {
+		t.Fatalf("normal sync did not update target or preserve its counters: %q %v", out, err)
 	}
 }

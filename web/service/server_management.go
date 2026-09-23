@@ -7,6 +7,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	"gorm.io/gorm"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,13 +50,13 @@ func (s *ServerManagementService) syncInbound(inbound *model.Inbound, oldPort in
 	if v.Host == "" {
 		return nil
 	}
-	if v.Password == "" {
-		return fmt.Errorf("未配置第三方服务器SSH密码")
-	}
 	if inbound.Port <= 0 {
 		return fmt.Errorf("节点端口无效")
 	}
-	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
+	cfg, err := remoteSSHClientConfig(v)
+	if err != nil {
+		return err
+	}
 	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return fmt.Errorf("SSH连接失败: %w", err)
@@ -69,7 +70,7 @@ func (s *ServerManagementService) syncInbound(inbound *model.Inbound, oldPort in
 	sql := syncInboundSQL(inbound, create, v.SyncStrategy == "full")
 	// 端口变更：远端旧端口账号必须一并迁移，否则残留可用账号成为孤儿。
 	if oldPort > 0 && oldPort != inbound.Port {
-		sql = syncInboundSQLWithOldPort(inbound, oldPort)
+		sql = syncInboundSQLWithOldPort(inbound, oldPort, v.SyncStrategy == "full")
 	}
 	if remove {
 		sql = deleteSyncedInboundSQL(inbound.Port)
@@ -105,6 +106,44 @@ func dialRemoteSSH(network, address string, cfg *ssh.ClientConfig) (*ssh.Client,
 		return nil, err
 	}
 	return ssh.NewClient(c, channels, requests), nil
+}
+
+func remoteSSHClientConfig(v *entity.ServerSetting) (*ssh.ClientConfig, error) {
+	mode := v.AuthMode
+	if mode == "" {
+		mode = "password"
+	}
+	var auth ssh.AuthMethod
+	switch mode {
+	case "password":
+		if v.Password == "" {
+			return nil, fmt.Errorf("未配置第三方服务器SSH密码")
+		}
+		auth = ssh.Password(v.Password)
+	case "privateKey":
+		if strings.TrimSpace(v.PrivateKey) == "" {
+			return nil, fmt.Errorf("未上传SSH私钥")
+		}
+		var signer ssh.Signer
+		var err error
+		if v.PrivateKeyPassword != "" {
+			signer, err = ssh.ParsePrivateKeyWithPassphrase([]byte(v.PrivateKey), []byte(v.PrivateKeyPassword))
+		} else {
+			signer, err = ssh.ParsePrivateKey([]byte(v.PrivateKey))
+		}
+		if err != nil {
+			return nil, fmt.Errorf("SSH私钥无法读取，请确认是 OpenSSH/PEM 格式且口令正确（PuTTY PPK 请先转换）: %w", err)
+		}
+		auth = ssh.PublicKeys(signer)
+	default:
+		return nil, fmt.Errorf("SSH认证方式无效")
+	}
+	return &ssh.ClientConfig{
+		User:            v.Username,
+		Auth:            []ssh.AuthMethod{auth},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	}, nil
 }
 
 // A missing owner makes an inbound invisible to the remote panel. Preserve an
@@ -153,17 +192,52 @@ func deleteSyncedInboundSQL(port int) string {
 	return fmt.Sprintf(".timeout 10000\nBEGIN IMMEDIATE;\nDELETE FROM inbounds WHERE port=%d;\nSELECT changes();\nCOMMIT;\n", port)
 }
 
-// syncInboundSQLWithOldPort 处理端口变更的远程同步：先把旧端口账号删除，
-// 再用 upsert 写入新端口账号，从而把账号从旧端口"迁移"到新端口。
-// 否则远端会残留旧端口账号继续可用，成为孤儿账号。
-func syncInboundSQLWithOldPort(inbound *model.Inbound, oldPort int) string {
-	// 删除旧端口与写入新端口必须属于同一个事务，否则写入失败时会留下
-	// “旧账号已删、新账号不存在”的远端空窗。
-	deleteSeq := strings.TrimPrefix(deleteSyncedInboundSQL(oldPort), ".timeout 10000\nBEGIN IMMEDIATE;\n")
-	deleteSeq = strings.TrimSuffix(deleteSeq, "SELECT changes();\nCOMMIT;\n")
-	insertSeq := strings.TrimPrefix(syncInboundSQL(inbound, false, true), ".timeout 10000\nBEGIN IMMEDIATE;\n")
-	insertSeq = strings.TrimSuffix(insertSeq, "SELECT changes();\nCOMMIT;\n")
-	return ".timeout 10000\nBEGIN IMMEDIATE;\n" + deleteSeq + insertSeq + "SELECT changes();\nCOMMIT;\n"
+// syncInboundSQLWithOldPort 处理端口变更时，优先原位迁移旧端口行以保留流量；
+// 若旧端口不存在，则普通策略只更新已存在的新端口，完全同步才允许创建。
+func syncInboundSQLWithOldPort(inbound *model.Inbound, oldPort int, full bool) string {
+	// Move an existing row in place so its remote up/down counters survive the
+	// port change. The normal policy leaves a missing remote port untouched;
+	// full sync falls back to the usual upsert when the old port is absent.
+	oldInbound := *inbound
+	oldInbound.Port = oldPort
+	updateScript := syncInboundSQL(&oldInbound, false)
+	oldOwner := fmt.Sprintf("COALESCE((SELECT user_id FROM inbounds WHERE port=%d AND user_id IN (SELECT id FROM users)), (SELECT min(id) FROM users HAVING count(*)=1))", oldPort)
+	owner := fmt.Sprintf("COALESCE((SELECT user_id FROM inbounds WHERE port=%d AND user_id IN (SELECT id FROM users)), (SELECT user_id FROM inbounds WHERE port=%d AND user_id IN (SELECT id FROM users)), (SELECT min(id) FROM users HAVING count(*)=1))", oldPort, inbound.Port)
+	updateScript = strings.Replace(updateScript, oldOwner, owner, 1)
+	ownerGuard := " WHERE EXISTS (SELECT 1 FROM inbounds WHERE port=" + strconv.Itoa(oldPort) + ") OR EXISTS (SELECT 1 FROM inbounds WHERE port=" + strconv.Itoa(inbound.Port) + ")"
+	if full {
+		ownerGuard += " OR 1=1"
+	}
+	updateScript = strings.Replace(updateScript,
+		"INSERT INTO sync_owner SELECT "+owner+";",
+		"INSERT INTO sync_owner SELECT "+owner+ownerGuard+";", 1)
+	updateScript = strings.Replace(updateScript, ") WHERE EXISTS (SELECT 1 FROM inbounds WHERE port="+strconv.Itoa(oldPort)+");", ")"+ownerGuard+";", 1)
+	updateScript = strings.Replace(updateScript, "UPDATE inbounds SET user_id=", "UPDATE inbounds SET port="+strconv.Itoa(inbound.Port)+",user_id=", 1)
+	updateScript = strings.Replace(updateScript, "tag='inbound-"+strconv.Itoa(oldPort)+"'", "tag='inbound-"+strconv.Itoa(inbound.Port)+"'", 1)
+
+	prefix := ".timeout 10000\nBEGIN IMMEDIATE;\n"
+	suffix := "SELECT changes();\nCOMMIT;\n"
+	body := strings.TrimSuffix(strings.TrimPrefix(updateScript, prefix), suffix)
+	// If the old remote row is missing but the new port already exists, normal
+	// synchronization must still update that matching port. Updating the row a
+	// second time after a successful migration is harmless and keeps its counters.
+	newPortScript := syncInboundSQL(inbound, false)
+	if updateAt := strings.Index(newPortScript, "UPDATE inbounds SET "); updateAt >= 0 {
+		if updateEnd := strings.Index(newPortScript[updateAt:], ";\n"); updateEnd >= 0 {
+			body += newPortScript[updateAt:updateAt+updateEnd+1] + "\n"
+		}
+	}
+	if full {
+		fallback := syncInboundSQL(inbound, false, true)
+		insertAt := strings.Index(fallback, "INSERT INTO inbounds ")
+		if insertAt >= 0 {
+			insertEnd := strings.Index(fallback[insertAt:], ";\n")
+			if insertEnd >= 0 {
+				body += fallback[insertAt:insertAt+insertEnd+1] + "\n"
+			}
+		}
+	}
+	return prefix + body + suffix
 }
 
 func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{}, error) {
@@ -174,10 +248,10 @@ func (s *ServerManagementService) RemoteInbound(port int) (map[string]interface{
 	if !v.SyncAccounts || v.Host == "" {
 		return nil, nil
 	}
-	if v.Password == "" {
-		return nil, fmt.Errorf("未配置第三方服务器SSH密码")
+	cfg, err := remoteSSHClientConfig(v)
+	if err != nil {
+		return nil, err
 	}
-	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
 	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return nil, err
@@ -295,13 +369,21 @@ var forceHeartbeat = func() {
 // 缓存清理同步完成并持有 serverStateMu，与 Traffic() 的写回串行，防止并发
 // 心跳把旧条目又写回来；心跳本身异步执行，SSH 慢时不会拖住删除请求。
 func (s *ServerManagementService) ResetPortTrafficCache(port int) {
+	s.ResetPortsTrafficCache(port)
+}
+
+func (s *ServerManagementService) ResetPortsTrafficCache(ports ...int) {
+	portSet := make(map[int]struct{}, len(ports))
+	for _, port := range ports {
+		portSet[port] = struct{}{}
+	}
 	serverStateMu.Lock()
 	cache, err := s.GetTrafficCache()
 	if err == nil && len(cache) > 0 {
 		kept := make([]*entity.ServerTraffic, 0, len(cache))
 		changed := false
 		for _, v := range cache {
-			if v.Port == port {
+			if _, reset := portSet[v.Port]; reset {
 				changed = true
 				continue
 			}
@@ -369,6 +451,10 @@ func (s *ServerManagementService) GetSetting() (*entity.ServerSetting, error) {
 	if v.HeartbeatMinutes == 0 {
 		v.HeartbeatMinutes = 10
 	}
+	if v.AuthMode == "" {
+		v.AuthMode = "password"
+	}
+	v.PrivateKeyConfigured = strings.TrimSpace(v.PrivateKey) != ""
 	return &v, nil
 }
 func (s *ServerManagementService) SaveSetting(v *entity.ServerSetting) error {
@@ -406,6 +492,24 @@ func (s *ServerManagementService) saveSettingLocked(v *entity.ServerSetting) err
 	if v.Password == "" {
 		v.Password = old.Password
 	}
+	if v.PrivateKey == "" {
+		v.PrivateKey = old.PrivateKey
+	}
+	if v.PrivateKeyPassword == "" && !v.PrivateKeyPasswordChanged {
+		v.PrivateKeyPassword = old.PrivateKeyPassword
+	}
+	v.PrivateKeyPasswordChanged = false
+	if v.AuthMode == "" {
+		v.AuthMode = "password"
+	}
+	if v.AuthMode == "privateKey" {
+		if _, err := remoteSSHClientConfig(v); err != nil {
+			return err
+		}
+	} else if v.AuthMode != "password" {
+		return fmt.Errorf("SSH认证方式无效")
+	}
+	v.PrivateKeyConfigured = false
 	b, _ := json.Marshal(v)
 	return database.GetDB().Transaction(func(db *gorm.DB) error {
 		row := &model.Setting{}
@@ -504,15 +608,18 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 	if err != nil {
 		return nil, err
 	}
-	if v.Host == "" || v.Password == "" {
-		return nil, fmt.Errorf("请先配置第三方服务器及SSH密码")
+	if v.Host == "" {
+		return nil, fmt.Errorf("请先配置第三方服务器")
 	}
 	if st.PendingMonth != 0 && st.LocalDone && !st.RemoteDone {
 		return nil, fmt.Errorf("月度远程清零尚未完成，等待重试")
 	}
 
 	// ---- 以下为锁外的 SSH 网络 IO：拨号、reload、读取远程流量 ----
-	cfg := &ssh.ClientConfig{User: v.Username, Auth: []ssh.AuthMethod{ssh.Password(v.Password)}, HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 10 * time.Second}
+	cfg, err := remoteSSHClientConfig(v)
+	if err != nil {
+		return nil, err
+	}
 	client, err := dialRemoteSSH("tcp", fmt.Sprintf("%s:%d", v.Host, v.Port), cfg)
 	if err != nil {
 		return nil, fmt.Errorf("SSH连接失败: %w", err)
@@ -545,7 +652,18 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 	// ---- 本地状态修改与写回重新加锁，与 DisableInvalidInbounds 等互斥 ----
 	serverStateMu.Lock()
 	defer serverStateMu.Unlock()
-	if v.AutoDisable {
+	currentSetting, err := s.GetSetting()
+	if err != nil {
+		return nil, err
+	}
+	currentResetState, err := s.getTrafficResetState()
+	if err != nil {
+		return nil, err
+	}
+	if err := validateTrafficSnapshot(v, currentSetting, st, currentResetState); err != nil {
+		return nil, err
+	}
+	if currentSetting.AutoDisable {
 		var localInbounds []model.Inbound
 		if err := database.GetDB().Find(&localInbounds).Error; err != nil {
 			return nil, err
@@ -609,6 +727,16 @@ func (s *ServerManagementService) Traffic() ([]*entity.ServerTraffic, error) {
 	return result, nil
 }
 
+func validateTrafficSnapshot(snapshotSetting, currentSetting *entity.ServerSetting, snapshotState, currentState *trafficResetState) error {
+	if remoteIdentity(snapshotSetting) != remoteIdentity(currentSetting) {
+		return fmt.Errorf("第三方服务器配置在心跳期间已更改，丢弃旧服务器读取结果")
+	}
+	if !reflect.DeepEqual(snapshotState, currentState) {
+		return fmt.Errorf("流量周期在心跳期间已更改，丢弃旧周期读取结果")
+	}
+	return nil
+}
+
 const remoteTrafficSQL = "SELECT port, COALESCE(up,0), COALESCE(down,0), COALESCE(total,0), COALESCE(enable,0) FROM inbounds ORDER BY port;"
 
 func parseRemoteTraffic(out []byte) ([]*entity.ServerTraffic, error) {
@@ -642,7 +770,7 @@ func (s *ServerManagementService) disableLocal(port int) (bool, error) {
 }
 
 func remoteDisableCommand(ports string) string {
-	return fmt.Sprintf(`sqlite3 -bail /etc/x-ui/x-ui.db ".timeout 5000" "BEGIN IMMEDIATE; UPDATE inbounds SET enable=0 WHERE enable=1 AND port IN (%s); INSERT INTO settings(key,value) SELECT 'remoteReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='remoteReloadPending'); COMMIT;" || exit $?
+	return fmt.Sprintf(`sqlite3 -bail /etc/x-ui/x-ui.db ".timeout 5000" "BEGIN IMMEDIATE; UPDATE inbounds SET enable=0,disabled_by='limit' WHERE enable=1 AND port IN (%s); INSERT INTO settings(key,value) SELECT 'remoteReloadPending','1' WHERE changes()>0 AND NOT EXISTS (SELECT 1 FROM settings WHERE key='remoteReloadPending'); COMMIT;" || exit $?
 pending=$(sqlite3 -batch -noheader /etc/x-ui/x-ui.db "SELECT count(*) FROM settings WHERE key='remoteReloadPending';") || exit $?
 if [ "$pending" -gt 0 ]; then
  systemctl restart x-ui || exit $?

@@ -81,6 +81,8 @@ func (a *ServerManagementController) getSetting(c *gin.Context) {
 		return
 	}
 	v.Password = ""
+	v.PrivateKey = ""
+	v.PrivateKeyPassword = ""
 	jsonObj(c, v, nil)
 }
 func (a *ServerManagementController) traffic(c *gin.Context) {

@@ -196,34 +196,37 @@ func (s *InboundService) UpdateInbound(inbound *model.Inbound) error {
 		return common.NewError("端口已存在:", inbound.Port)
 	}
 
-	oldInbound, err := s.GetInbound(inbound.Id)
-	if err != nil {
-		return err
-	}
-	// 不覆盖 Up/Down：用户可能只改了备注，期间 xray 已累加了新流量。
-	// 流量由 AddTraffic 独立累加，编辑操作应保持已有用量不变。
-	oldInbound.Total = inbound.Total
-	oldInbound.Remark = inbound.Remark
-	// 编辑界面对 enable 的改动是管理员手动操作：禁用记为 "manual"（避免随月初
-	// 恢复被误复活），启用则清除之前的停用来源。
-	oldInbound.Enable = inbound.Enable
-	if inbound.Enable {
-		oldInbound.DisabledBy = ""
-	} else if oldInbound.Enable && oldInbound.DisabledBy == "" {
-		oldInbound.DisabledBy = "manual"
-	}
-	oldInbound.ExpiryTime = inbound.ExpiryTime
-	oldInbound.MonthlyReset = inbound.MonthlyReset
-	oldInbound.Listen = inbound.Listen
-	oldInbound.Port = inbound.Port
-	oldInbound.Protocol = inbound.Protocol
-	oldInbound.Settings = inbound.Settings
-	oldInbound.StreamSettings = inbound.StreamSettings
-	oldInbound.Sniffing = inbound.Sniffing
-	oldInbound.Tag = fmt.Sprintf("inbound-%v", inbound.Port)
-
 	db := database.GetDB()
-	return db.Save(oldInbound).Error
+	return db.Transaction(func(tx *gorm.DB) error {
+		oldInbound := &model.Inbound{}
+		if err := tx.Where("id = ?", inbound.Id).First(oldInbound).Error; err != nil {
+			return err
+		}
+		disabledBy := oldInbound.DisabledBy
+		if inbound.Enable {
+			disabledBy = ""
+		} else if oldInbound.Enable && disabledBy == "" {
+			disabledBy = "manual"
+		}
+		// Update only editable columns. AddTraffic increments up/down in SQL, so
+		// an edit racing with a traffic sample cannot write stale counters back.
+		updates := map[string]interface{}{
+			"total": inbound.Total, "remark": inbound.Remark, "enable": inbound.Enable,
+			"disabled_by": disabledBy, "expiry_time": inbound.ExpiryTime,
+			"monthly_reset": inbound.MonthlyReset, "listen": inbound.Listen,
+			"port": inbound.Port, "protocol": inbound.Protocol, "settings": inbound.Settings,
+			"stream_settings": inbound.StreamSettings, "sniffing": inbound.Sniffing,
+			"tag": fmt.Sprintf("inbound-%v", inbound.Port),
+		}
+		result := tx.Model(&model.Inbound{}).Where("id = ?", inbound.Id).Updates(updates)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return fmt.Errorf("入站不存在或已被删除")
+		}
+		return nil
+	})
 }
 
 // ResetTraffic 将指定入站的 up/down 清零，用于"重置流量"。
@@ -243,11 +246,16 @@ func (s *InboundService) AddTraffic(traffics []*xray.Traffic) (err error) {
 	db := database.GetDB()
 	db = db.Model(model.Inbound{})
 	tx := db.Begin()
+	if tx.Error != nil {
+		return tx.Error
+	}
 	defer func() {
 		if err != nil {
 			tx.Rollback()
 		} else {
-			tx.Commit()
+			// The caller advances Xray's sampling baseline only when this
+			// function returns nil, so a failed commit must be reported too.
+			err = tx.Commit().Error
 		}
 	}()
 	for _, traffic := range traffics {

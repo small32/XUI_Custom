@@ -16,8 +16,10 @@ type XrayTrafficJob struct {
 	// GetXrayTraffic 现在读累计值且不再重置 xray 计数器，
 	// 本 job 通过"当前累计 - 基线"得到增量，只有写库成功才推进基线。
 	// 这样一旦写库失败，下一轮还能用新的累计减旧基线把缺口补回来，流量不丢失。
-	mu       sync.Mutex
-	baseline map[string]xray.Traffic
+	mu            sync.Mutex
+	baseline      map[string]xray.Traffic
+	generation    uint64
+	hasGeneration bool
 }
 
 func NewXrayTrafficJob() *XrayTrafficJob {
@@ -32,10 +34,11 @@ func (j *XrayTrafficJob) Run() {
 		// A stopped/restarted Xray has a fresh stats counter. Do not subtract
 		// the new process counters from the previous process baseline.
 		j.baseline = make(map[string]xray.Traffic)
+		j.hasGeneration = false
 		j.mu.Unlock()
 		return
 	}
-	cur, err := j.xrayService.GetXrayTraffic()
+	cur, generation, err := j.xrayService.GetXrayTrafficSnapshot()
 	if err != nil {
 		logger.Warning("get xray traffic failed:", err)
 		return
@@ -44,44 +47,54 @@ func (j *XrayTrafficJob) Run() {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 
-	deltas := make([]*xray.Traffic, 0)
-	for _, item := range cur {
-		if !item.IsInbound {
-			continue
-		}
-		last, ok := j.baseline[item.Tag]
-		if !ok {
-			// 首次见到该入站（或 xray 刚重启、计数归零），以当前累计为基线，不写增量，
-			// 避免把 xray 的历史累计量误计。
-			j.baseline[item.Tag] = *item
-			continue
-		}
-		deltaUp := item.Up - last.Up
-		deltaDown := item.Down - last.Down
-		if deltaUp < 0 || deltaDown < 0 {
-			// 计数被外部清零或 xray 重启：无法可靠计算增量，重置基线后跳过本轮。
-			j.baseline[item.Tag] = *item
-			continue
-		}
-		if deltaUp == 0 && deltaDown == 0 {
-			continue
-		}
-		deltas = append(deltas, &xray.Traffic{IsInbound: true, Tag: item.Tag, Up: deltaUp, Down: deltaDown})
+	deltas, newBaseline := trafficDeltasForGeneration(generation, j.generation, j.hasGeneration, cur, j.baseline)
+	if !j.hasGeneration || generation != j.generation {
+		j.baseline = make(map[string]xray.Traffic)
+		j.generation = generation
+		j.hasGeneration = true
 	}
-
 	if len(deltas) == 0 {
+		j.baseline = newBaseline
 		return
 	}
-	// 只有写库成功才推进基线；失败时基线保持不变，下一轮可重算缺口。
-	newBaseline := make(map[string]xray.Traffic, len(cur))
-	for _, item := range cur {
-		if item.IsInbound {
-			newBaseline[item.Tag] = *item
-		}
-	}
+	// Only advance the baseline after all increments have committed. A failed
+	// write is retried from the old baseline on the next poll.
 	if err := j.inboundService.AddTraffic(deltas); err != nil {
 		logger.Warning("add traffic failed, will retry next round:", err)
 		return
 	}
 	j.baseline = newBaseline
+}
+
+func trafficDeltasForGeneration(generation, baselineGeneration uint64, hasGeneration bool, cur []*xray.Traffic, baseline map[string]xray.Traffic) ([]*xray.Traffic, map[string]xray.Traffic) {
+	if !hasGeneration || generation != baselineGeneration {
+		baseline = make(map[string]xray.Traffic)
+	}
+	return trafficDeltas(cur, baseline)
+}
+
+func trafficDeltas(cur []*xray.Traffic, baseline map[string]xray.Traffic) ([]*xray.Traffic, map[string]xray.Traffic) {
+	deltas := make([]*xray.Traffic, 0)
+	newBaseline := make(map[string]xray.Traffic, len(cur))
+	for _, item := range cur {
+		if !item.IsInbound {
+			continue
+		}
+		newBaseline[item.Tag] = *item
+		last, ok := baseline[item.Tag]
+		deltaUp, deltaDown := item.Up, item.Down
+		if ok {
+			deltaUp = item.Up - last.Up
+			deltaDown = item.Down - last.Down
+			if deltaUp < 0 || deltaDown < 0 {
+				// Counters reset within one generation (for example an operator
+				// reset them externally); count the new counter values from zero.
+				deltaUp, deltaDown = item.Up, item.Down
+			}
+		}
+		if deltaUp > 0 || deltaDown > 0 {
+			deltas = append(deltas, &xray.Traffic{IsInbound: true, Tag: item.Tag, Up: deltaUp, Down: deltaDown})
+		}
+	}
+	return deltas, newBaseline
 }

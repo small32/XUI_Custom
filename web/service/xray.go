@@ -17,9 +17,10 @@ import (
 //
 // 注意：此锁不可重入，已持锁的代码只能调用带 Locked 后缀的内部函数。
 var (
-	lock   sync.RWMutex
-	p      *xray.Process
-	result string
+	lock             sync.RWMutex
+	p                *xray.Process
+	result           string
+	processGeneration uint64
 )
 
 var isNeedXrayRestart atomic.Bool
@@ -108,18 +109,27 @@ func (s *XrayService) GetXrayConfig() (*xray.Config, error) {
 }
 
 func (s *XrayService) GetXrayTraffic() ([]*xray.Traffic, error) {
+	traffic, _, err := s.GetXrayTrafficSnapshot()
+	return traffic, err
+}
+
+// GetXrayTrafficSnapshot returns counters with the identity of the Xray process
+// that supplied them. A restarted process starts a fresh counter namespace.
+func (s *XrayService) GetXrayTrafficSnapshot() ([]*xray.Traffic, uint64, error) {
 	// 一次取到指针与运行状态，避免 IsXrayRunning 与 p 分两次读导致状态错位。
 	lock.RLock()
 	proc := p
+	generation := processGeneration
 	running := isXrayRunningLocked()
 	lock.RUnlock()
 
 	if !running {
-		return nil, errors.New("xray is not running")
+		return nil, generation, errors.New("xray is not running")
 	}
 	// 读累计值且不重置 xray 计数器。清零由 XrayTrafficJob 在成功落库后推进基线完成，
 	// 避免"先清零、写库失败"导致该间隔流量永久丢失。
-	return proc.GetTraffic(false)
+	traffic, err := proc.GetTraffic(false)
+	return traffic, generation, err
 }
 
 func (s *XrayService) RestartXray(isForce bool) error {
@@ -141,6 +151,7 @@ func (s *XrayService) RestartXray(isForce bool) error {
 	}
 
 	p = xray.NewProcess(xrayConfig)
+	processGeneration++
 	result = ""
 	return p.Start()
 }

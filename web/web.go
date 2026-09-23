@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"embed"
 	"html/template"
@@ -167,16 +168,7 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	}
 	assetsBasePath := basePath + "assets/"
 
-	store := cookie.NewStore(secret)
-	// 会话 Cookie 默认不设 HttpOnly/SameSite，存在被 JS 读取与跨站利用的风险。
-	// HttpOnly 防脚本读取；SameSite=Lax 阻断跨站携带，又不影响同站页面导航。
-	// （Secure 需 HTTPS 环境，为避免破坏纯 HTTP 部署暂不强制开启。）
-	store.Options(sessions.Options{
-		Path:     "/",
-		MaxAge:   60 * 60 * 24 * 30,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	store := newSessionStore(secret)
 	engine.Use(sessions.Sessions("session", store))
 	engine.Use(func(c *gin.Context) {
 		c.Set("base_path", basePath)
@@ -217,6 +209,21 @@ func (s *Server) initRouter() (*gin.Engine, error) {
 	s.xui = controller.NewXUIController(g)
 
 	return engine, nil
+}
+
+func newSessionStore(secret []byte) sessions.Store {
+	// Cookie store accepts an authentication key and an optional encryption key.
+	// Derive a distinct 256-bit encryption key so session values (including the
+	// password-change fingerprint) are not readable from a signed cookie.
+	encryptionKey := sha256.Sum256(append([]byte("x-ui/session-encryption/"), secret...))
+	store := cookie.NewStore(secret, encryptionKey[:])
+	store.Options(sessions.Options{
+		Path:     "/",
+		MaxAge:   60 * 60 * 24 * 30,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	return store
 }
 
 func (s *Server) initI18n(engine *gin.Engine) error {

@@ -15,7 +15,10 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 	"x-ui/logger"
 	"x-ui/util/sys"
@@ -268,42 +271,153 @@ func (s *ServerService) UpdateXray(version string) error {
 		return err
 	}
 
-	s.xrayService.StopXray()
-	defer func() {
-		err := s.xrayService.RestartXray(true)
-		if err != nil {
-			logger.Error("start xray failed:", err)
-		}
-	}()
-
-	copyZipFile := func(zipName string, fileName string) error {
-		zipFile, err := reader.Open(zipName)
-		if err != nil {
+	stageDir, err := os.MkdirTemp(filepath.Dir(xray.GetBinaryPath()), ".xray-update-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stageDir)
+	files := []xrayUpdateFile{
+		{zipName: "xray", staged: filepath.Join(stageDir, "xray"), target: xray.GetBinaryPath(), mode: 0755},
+		{zipName: "geosite.dat", staged: filepath.Join(stageDir, "geosite.dat"), target: xray.GetGeositePath(), mode: 0644},
+		{zipName: "geoip.dat", staged: filepath.Join(stageDir, "geoip.dat"), target: xray.GetGeoipPath(), mode: 0644},
+	}
+	for _, file := range files {
+		if err = extractZipFile(reader, file.zipName, file.staged, file.mode); err != nil {
 			return err
 		}
-		os.Remove(fileName)
-		file, err := os.OpenFile(fileName, os.O_CREATE|os.O_RDWR|os.O_TRUNC, fs.ModePerm)
-		if err != nil {
-			return err
+	}
+	if output, checkErr := exec.Command(files[0].staged, "version").CombinedOutput(); checkErr != nil {
+		return fmt.Errorf("新 Xray 文件无法执行: %w: %s", checkErr, strings.TrimSpace(string(output)))
+	}
+
+	if s.xrayService.IsXrayRunning() {
+		if err = s.xrayService.StopXray(); err != nil {
+			return fmt.Errorf("停止 Xray 失败: %w", err)
 		}
-		defer file.Close()
-		_, err = io.Copy(file, zipFile)
-		return err
 	}
-
-	err = copyZipFile("xray", xray.GetBinaryPath())
+	backups, err := replaceXrayFiles(files)
 	if err != nil {
+		if restartErr := s.xrayService.RestartXray(true); restartErr != nil {
+			return fmt.Errorf("替换 Xray 文件失败: %v；重新启动原版本失败: %w", err, restartErr)
+		}
 		return err
 	}
-	err = copyZipFile("geosite.dat", xray.GetGeositePath())
+	if err = s.xrayService.RestartXray(true); err == nil {
+		time.Sleep(500 * time.Millisecond)
+		if !s.xrayService.IsXrayRunning() {
+			err = fmt.Errorf("新 Xray 启动后立即退出")
+		}
+	}
 	if err != nil {
-		return err
+		rollbackErr := rollbackXrayFiles(backups)
+		oldStartErr := s.xrayService.RestartXray(true)
+		if rollbackErr != nil || oldStartErr != nil {
+			return fmt.Errorf("新 Xray 启动失败: %v；恢复旧版本失败: rollback=%v, restart=%v", err, rollbackErr, oldStartErr)
+		}
+		return fmt.Errorf("新 Xray 启动失败，已恢复旧版本: %w", err)
 	}
-	err = copyZipFile("geoip.dat", xray.GetGeoipPath())
-	if err != nil {
-		return err
+	for _, backup := range backups {
+		if backup.hadOriginal {
+			_ = os.Remove(backup.backup)
+		}
 	}
-
 	return nil
+}
 
+type xrayUpdateFile struct {
+	zipName string
+	staged  string
+	target  string
+	mode    fs.FileMode
+}
+
+type xrayUpdateBackup struct {
+	target      string
+	backup      string
+	hadOriginal bool
+}
+
+func extractZipFile(reader *zip.Reader, name, target string, mode fs.FileMode) error {
+	var entry *zip.File
+	for _, candidate := range reader.File {
+		if candidate.Name == name {
+			entry = candidate
+			break
+		}
+	}
+	if entry == nil {
+		return fmt.Errorf("Xray 更新包缺少 %s", name)
+	}
+	source, err := entry.Open()
+	if err != nil {
+		return err
+	}
+	defer source.Close()
+	destination, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(destination, source)
+	closeErr := destination.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Chmod(target, mode)
+}
+
+func replaceXrayFiles(files []xrayUpdateFile) ([]xrayUpdateBackup, error) {
+	backups := make([]xrayUpdateBackup, 0, len(files))
+	fail := func(cause error) ([]xrayUpdateBackup, error) {
+		if rollbackErr := rollbackXrayFiles(backups); rollbackErr != nil {
+			return nil, fmt.Errorf("文件替换失败: %v；恢复旧文件失败: %w", cause, rollbackErr)
+		}
+		return nil, cause
+	}
+	for _, file := range files {
+		backup := xrayUpdateBackup{target: file.target}
+		if _, err := os.Stat(file.target); err == nil {
+			placeholder, err := os.CreateTemp(filepath.Dir(file.target), ".xray-backup-")
+			if err != nil {
+				return fail(err)
+			}
+			backup.backup = placeholder.Name()
+			if err = placeholder.Close(); err != nil {
+				_ = os.Remove(backup.backup)
+				return fail(err)
+			}
+			if err = os.Remove(backup.backup); err != nil {
+				return fail(err)
+			}
+			if err = os.Rename(file.target, backup.backup); err != nil {
+				return fail(err)
+			}
+			backup.hadOriginal = true
+		} else if !os.IsNotExist(err) {
+			return fail(err)
+		}
+		backups = append(backups, backup)
+		if err := os.Rename(file.staged, file.target); err != nil {
+			return fail(err)
+		}
+	}
+	return backups, nil
+}
+
+func rollbackXrayFiles(backups []xrayUpdateBackup) error {
+	var firstErr error
+	for i := len(backups) - 1; i >= 0; i-- {
+		backup := backups[i]
+		if err := os.Remove(backup.target); err != nil && !os.IsNotExist(err) && firstErr == nil {
+			firstErr = err
+		}
+		if backup.hadOriginal {
+			if err := os.Rename(backup.backup, backup.target); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }

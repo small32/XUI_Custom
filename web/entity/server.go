@@ -1,15 +1,20 @@
 package entity
 
 type ServerSetting struct {
-	Name             string `json:"name" form:"name"`
-	SyncStrategy     string `json:"syncStrategy" form:"syncStrategy"`
-	Host             string `json:"host" form:"host"`
-	Port             int    `json:"port" form:"port"`
-	Username         string `json:"username" form:"username"`
-	Password         string `json:"password,omitempty" form:"password"`
-	AutoDisable      bool   `json:"autoDisable" form:"autoDisable"`
-	SyncAccounts     bool   `json:"syncAccounts" form:"syncAccounts"`
-	HeartbeatMinutes int    `json:"heartbeatMinutes" form:"heartbeatMinutes"`
+	Name                      string `json:"name" form:"name"`
+	SyncStrategy              string `json:"syncStrategy" form:"syncStrategy"`
+	Host                      string `json:"host" form:"host"`
+	Port                      int    `json:"port" form:"port"`
+	Username                  string `json:"username" form:"username"`
+	Password                  string `json:"password,omitempty" form:"password"`
+	AuthMode                  string `json:"authMode" form:"authMode"`
+	PrivateKey                string `json:"privateKey,omitempty" form:"privateKey"`
+	PrivateKeyPassword        string `json:"privateKeyPassword,omitempty" form:"privateKeyPassword"`
+	PrivateKeyPasswordChanged bool   `json:"privateKeyPasswordChanged" form:"privateKeyPasswordChanged"`
+	PrivateKeyConfigured      bool   `json:"privateKeyConfigured" form:"-"`
+	AutoDisable               bool   `json:"autoDisable" form:"autoDisable"`
+	SyncAccounts              bool   `json:"syncAccounts" form:"syncAccounts"`
+	HeartbeatMinutes          int    `json:"heartbeatMinutes" form:"heartbeatMinutes"`
 	// PendingDeletes 存储同步删除失败的端口号，管理员需手动到远程服务器删除对应账号。
 	PendingDeletes []int `json:"pendingDeletes,omitempty" form:"pendingDeletes"`
 }

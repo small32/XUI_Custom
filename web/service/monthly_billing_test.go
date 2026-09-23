@@ -102,12 +102,12 @@ func TestTrafficResetOnlyAffectsMonthlyInbounds(t *testing.T) {
 	db := database.GetDB()
 	const total = 1000
 	seeds := []struct {
-		port    int
-		monthly bool
-		up      int64
-		enable  bool
+		port       int
+		monthly    bool
+		up         int64
+		enable     bool
 		disabledBy string
-		remark  string
+		remark     string
 	}{
 		{9501, true, 1500, false, "limit", "按月：已超限被停用"},
 		{9502, false, 1500, false, "limit", "累计：已超限被停用"},

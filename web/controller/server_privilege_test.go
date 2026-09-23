@@ -3,6 +3,7 @@ package controller
 import (
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-contrib/sessions/cookie"
 	"github.com/gin-gonic/gin"
 
+	"x-ui/database"
 	"x-ui/database/model"
 	"x-ui/web/session"
 )
@@ -19,6 +21,13 @@ import (
 // 锁住 #1 越权修复，防止日后改动回归。
 func TestRestrictedLoginDeniedOnAdminEndpoints(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	if err := database.InitDB(filepath.Join(t.TempDir(), "sessions.db")); err != nil {
+		t.Fatal(err)
+	}
+	admin := &model.User{Username: "admin", Password: "test-hash"}
+	if err := database.GetDB().Create(admin).Error; err != nil {
+		t.Fatal(err)
+	}
 
 	build := func(setupSession func(c *gin.Context)) *gin.Engine {
 		engine := gin.New()
@@ -50,7 +59,7 @@ func TestRestrictedLoginDeniedOnAdminEndpoints(t *testing.T) {
 	// 管理员会话：应放行。
 	adminEngine := build(func(c *gin.Context) {
 		c.Set("base_path", "/")
-		if err := session.SetLoginUser(c, &model.User{Id: 1, Username: "admin"}); err != nil {
+		if err := session.SetLoginUser(c, admin); err != nil {
 			t.Fatal(err)
 		}
 		c.Next()

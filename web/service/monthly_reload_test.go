@@ -50,7 +50,7 @@ func TestRemoteMonthlyReloadIntent(t *testing.T) {
 		}
 		return string(out)
 	}
-	run("CREATE TABLE settings(key TEXT,value TEXT); CREATE TABLE inbounds(port INTEGER,enable INTEGER,expiry_time INTEGER,up INTEGER,down INTEGER); INSERT INTO inbounds VALUES(12345,0,0,100,0);")
+	run("CREATE TABLE settings(key TEXT,value TEXT); CREATE TABLE inbounds(port INTEGER,enable INTEGER,expiry_time INTEGER,up INTEGER,down INTEGER,disabled_by TEXT); INSERT INTO inbounds VALUES(12345,0,0,100,0,'limit');")
 	for i := 0; i < 2; i++ {
 		run(remoteMonthlyResetSQL([]int{12345}, []int{12345, 23456}, time.Now()))
 		if got := run("SELECT count(*) FROM settings WHERE key='monthlyResetReloadPending';"); got != "1\n" {

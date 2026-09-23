@@ -203,10 +203,12 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 		return
 	}
 	// 端口变更需要把远端旧端口账号一并迁移，同步前先取旧端口。
-	oldPort := 0
-	if old, getErr := a.inboundService.GetInbound(id); getErr == nil {
-		oldPort = old.Port
+	old, getErr := a.inboundService.GetInbound(id)
+	if getErr != nil {
+		jsonMsg(c, "修改", getErr)
+		return
 	}
+	oldPort := old.Port
 	err = a.inboundService.UpdateInbound(inbound)
 	if err == nil {
 		if syncErr := a.serverService.SyncInbound(inbound, oldPort, false); syncErr != nil {
@@ -214,6 +216,9 @@ func (a *InboundController) updateInbound(c *gin.Context) {
 			err = fmt.Errorf("本地账号已修改，但第三方同步失败: %w", syncErr)
 		}
 		a.xrayService.SetToNeedRestart()
+		if oldPort != inbound.Port {
+			a.serverService.ResetPortsTrafficCache(oldPort, inbound.Port)
+		}
 	}
 	jsonMsg(c, "修改", err)
 }
